@@ -3,7 +3,7 @@
 [extension]
 id = "trace"
 name = "Trace"
-version = "0.1.2"
+version = "0.1.3"
 publisher = "pointman-ai"
 summary = "Watch agents work: a thread's runs, model calls and tool calls as a live waterfall, and every trace running now."
 node = ">=0.1,<1"

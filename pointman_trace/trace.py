@@ -101,8 +101,10 @@ class Waterfall:
     """One waterfall block as the apps have it: a thread's turns, its agents above them. `compact` keeps only the
     agents and their runs (the Live pane's)."""
 
-    def __init__(self, bid: str, title: str, *, thread: int | None = None, compact: bool = False):
+    def __init__(self, bid: str, title: str, *, thread: int | None = None, compact: bool = False,
+                 machine: str | None = None):
         self.bid, self.title, self.thread, self.compact = bid, title, thread, compact
+        self.machine = machine                 # where its runs were: the apps merge every machine's (EXT-65)
         self.turns: dict[str, Turn] = {}       # every turn it has shown, kept while it's open
         self.started: int | None = None        # epoch ms its times count from
         self.sent: list[dict] | None = None    # its spans as the apps have them
@@ -143,7 +145,7 @@ class Waterfall:
             running = any(r["end_ms"] is None for r in rs)
             boss = spawner.get(handle)
             out.append({"id": f"a:{handle}", "parent": f"a:{boss}" if boss in agents and boss != handle else None,
-                        "kind": "agent", "name": f"@{handle}", "agent": handle,
+                        "kind": "agent", "name": f"@{handle}", "agent": handle, **self._on(),
                         "model": models.most_common(1)[0][0] if models else None,
                         "start_ms": min(r["start_ms"] for r in rs),
                         "end_ms": None if running else max(r["end_ms"] for r in rs),
@@ -151,6 +153,7 @@ class Waterfall:
                         "state": "running" if running else "ok"})
         for t, run in runs:
             run["agent"] = t.handle
+            run.update(self._on())
             if t.prompt:
                 self.owner[t.id] = t
             out.append(run)
@@ -204,12 +207,16 @@ class Waterfall:
             out["name"] = "?"
         return out
 
+    def _on(self) -> dict:
+        return {"machine": self.machine} if self.machine else {}
+
     def _head(self) -> dict:
         return {"title": self.title, "state": "live" if self.running else "done", "totals": self._totals()}
 
     def _view(self) -> dict:
         """The block as it is now, not a copy: for checking."""
         b = {"type": "waterfall", "id": self.bid, **self.head, "spans": self.sent or []}
+        b.update(self._on())
         if self.compact:
             b["compact"] = True
         if self.thread:
@@ -218,6 +225,7 @@ class Waterfall:
 
     def block(self) -> dict:
         b = {"type": "waterfall", "id": self.bid, **self.head, "started": iso(self.started or 0)}
+        b.update(self._on())
         if self.compact:
             b["compact"] = True
         if self.thread:

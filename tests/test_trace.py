@@ -139,6 +139,19 @@ class WaterfallTests(unittest.TestCase):
         self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run"])
         self.assertEqual(block["totals"]["tool_calls"], 1)
 
+    def test_each_trace_and_its_agents_and_runs_say_their_machine(self):
+        a = Log(self.dir, 1, "scene", thread=500)
+        a.say("q1", tool("t1", "Bash", command="ls"))
+        w = Waterfall("t500", "A thread", thread=500, compact=True, machine="nixos")
+        w.take(self.turns())
+        block = w.full({})
+        self.assertEqual(block["machine"], "nixos")
+        self.assertEqual([(s["kind"], s.get("machine")) for s in block["spans"]], [("agent", "nixos"), ("run", "nixos")])
+        self.assertEqual(w.block()["machine"], "nixos")
+        bare = Waterfall("t500", "A thread", thread=500, compact=True)
+        bare.take(self.turns())
+        self.assertNotIn("machine", bare.full({}))     # a node that doesn't say its name: none rather than a guess
+
     def test_a_big_trace_folds_its_oldest_runs(self):
         for rid in range(1, 6):
             log = Log(self.dir, rid, "scene", thread=500, live=rid == 5, start=T0 + rid * 600_000)
