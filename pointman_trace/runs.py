@@ -35,6 +35,7 @@ from pathlib import Path
 
 CUT = 300            # characters of a span's input or output: the node's limit
 DETAIL = 80          # characters of a span's detail
+SCAN = 4000          # characters of a long text cleaned: what's past them can't show
 FRESH = 10.0         # seconds a log with no meta file beside it still counts as starting
 NAME = re.compile(r"^run-(\d+)\.json$")
 HANDLE = re.compile(r"board @([a-z0-9][a-z0-9_-]{0,63})")
@@ -43,11 +44,18 @@ THREAD = re.compile(r"\(thread (\d+)\)")
 POST = re.compile(r"^\[\d+\] (.+?)(?: ›|:)", re.M)
 SPAWN = re.compile(r"^/spawn ([a-z0-9][a-z0-9-]*)", re.M)
 TASKS = ("Task", "Agent")
-SECRET = [
-    re.compile(r"(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}"),
-    re.compile(r"(?i)\b([a-z0-9_-]*(?:token|secret|password|passwd|api[_-]?key|_key|-key)|authorization|cookie)\b"
-               r"([\"']?\s*[:=]\s*[\"']?)(?!bearer\b|basic\b|\[hidden\])[^\s,\"'}]+"),
-    re.compile(r"\b(sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[abpr]-[A-Za-z0-9-]{10,})"),
+NAMED = r"[A-Za-z0-9_-]*(?:key|token|secret|pass(?!ed\b|es\b|ing\b|age)|pwd|credential|authorization|cookie)[A-Za-z0-9_-]*"
+SECRET = [        # (pattern, what it becomes): each a credential's shape (loupe's review, 17979 [18127])
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)", re.S), "[hidden]"),
+    (re.compile(r"(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1\2[hidden]"),
+    (re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@\"']+@"), r"\1[hidden]@"),                   # user:pass@ in a URL
+    (re.compile(r"(?i)(\b" + NAMED + r"[\"']?\s*[:=]\s*[\"']?)(?!bearer\b|basic\b|\[hidden\])[^\s,\"'}\]]+"),
+     r"\1[hidden]"),                                                                         # NAME=value, "name": "value"
+    (re.compile(r"(?i)(\"" + NAMED + r"\"\s*,\s*\")[^\"]+"), r"\1[hidden]"),                 # ["NAME", "value"]
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), "[hidden]"),       # a JWT
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[hidden]"),                                # an AWS access key
+    (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|[rsp]k_(?:live|test)_[A-Za-z0-9]{8,}|whsec_[A-Za-z0-9]{8,}"
+                r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,})"), "[hidden]"),
 ]
 LONG = re.compile(r"\b[A-Za-z0-9+_-]{40,}={0,2}")    # a key or token: long, and full of digits (a path's words aren't)
 SERVICES = {"Bash": "shell", "Read": "files", "Edit": "files", "Write": "files", "Glob": "files", "Grep": "files",
@@ -69,10 +77,12 @@ def clean(text, n: int = CUT) -> str | None:
         return None
     if not isinstance(text, str):
         text = json.dumps(text, ensure_ascii=False)
+    if len(text) > SCAN:                  # only what can show is looked at, cut where no value is split
+        cut = max(text.rfind(" ", 0, SCAN), text.rfind("\n", 0, SCAN))
+        text = text[:cut if cut > 0 else SCAN]
     text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
-    for p in SECRET:
-        text = p.sub(lambda m: m.group(1) + m.group(2) + "[hidden]" if m.lastindex and m.lastindex >= 2
-                     else "[hidden]", text)
+    for pattern, hidden in SECRET:
+        text = pattern.sub(hidden, text)
     text = LONG.sub(lambda m: "[hidden]" if sum(c.isdigit() for c in m.group(0)) >= 6 else m.group(0), text)
     text = " ".join(text.split())
     return text if len(text) <= n else text[: n - 1] + "…"

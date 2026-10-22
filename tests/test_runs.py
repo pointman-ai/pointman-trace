@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -138,6 +139,66 @@ class RunTests(unittest.TestCase):
                          "/Users/x/Documents/a-very-long-folder-name-that-goes-on-and-on-and-on/file.py")
         self.assertEqual(clean("\x1b[31mred\x1b[0m  text\n"), "red text")
         self.assertEqual(len(clean("y " * 400)), 300)
+
+
+class CleanTests(unittest.TestCase):
+    """Credential shapes clean() hides (loupe's review, Pointman thread 17979 [18127])."""
+
+    JWT = ("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ."
+           "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c")
+
+    def hidden(self, raw: str, *gone: str) -> str:
+        out = clean(raw)
+        self.assertIn("[hidden]", out, raw)
+        for g in gone:
+            self.assertNotIn(g, out, raw)
+        return out
+
+    def test_aws_access_keys(self):
+        self.hidden("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE")
+        self.hidden("the key is ASIAIOSFODNN7EXAMPLE here", "ASIAIOSFODNN7EXAMPLE")
+
+    def test_private_keys(self):
+        pem = ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ\n"
+               "QyNTUxOQAAACDb\n-----END OPENSSH PRIVATE KEY-----")
+        self.assertEqual(clean(f"cat id: {pem} done"), "cat id: [hidden] done")
+        self.assertEqual(clean(pem.split("-----END")[0]), "[hidden]")          # cut before its end
+        self.hidden(json.dumps({"key": pem}), "b3BlbnNz", "QyNTUxOQ")             # inside a tool's input
+
+    def test_passwords_in_urls(self):
+        self.assertEqual(clean("git clone https://user:pass@github.com/x/y"),
+                         "git clone https://[hidden]@github.com/x/y")
+        self.assertEqual(clean("https://ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/x"),
+                         "https://[hidden]@github.com/x")
+        self.assertEqual(clean("see https://github.com/x/y@main"), "see https://github.com/x/y@main")
+
+    def test_jwts(self):
+        self.assertEqual(clean(f"token {self.JWT} ok"), "token [hidden] ok")
+
+    def test_stripe_and_other_service_keys(self):
+        for key in ("sk_live_51HxQabcdefghijklmnop", "rk_test_51HxQabcdefghijk", "pk_live_51HxQabcdefgh",
+                    "whsec_abcdefghijklmnop", "github_pat_11ABCDEFG0123456789_abcdefghij"):
+            self.assertEqual(clean(f"x {key} y"), "x [hidden] y", key)
+        self.hidden("STRIPE=sk_live_51HxQabcdefghijklmnop", "51HxQ")
+
+    def test_names_that_contain_key_token_secret_or_pass(self):
+        self.assertEqual(clean("DB_PASSWORD_PROD=hunter2 AWS_SECRET_ACCESS_KEY_2=abc/def"),
+                         "DB_PASSWORD_PROD=[hidden] AWS_SECRET_ACCESS_KEY_2=[hidden]")
+        self.assertEqual(clean('{"apiKeyValue": "v1", "MY_TOKEN_FILE": "/x"}'),
+                         '{"apiKeyValue": "[hidden]", "MY_TOKEN_FILE": "[hidden]"}')
+        self.assertEqual(clean('[["SECRET_KEY", "never-shown"], ["PATH", "/bin"]]'),
+                         '[["SECRET_KEY", "[hidden]"], ["PATH", "/bin"]]')
+        self.assertEqual(clean("DB_PASS=x"), "DB_PASS=[hidden]")
+
+    def test_ordinary_text_stays(self):
+        for s in ("19 passed: all good", "Tests passed=19", "a basic test of bearer tokens",
+                  "session 38d8ce55-f390-5969-b346-d01750c96d04 ok", "read_thread 17979",
+                  "git push origin main@{u}", "https://github.com/pointman-ai/pointman-trace/pull/3"):
+            self.assertEqual(clean(s), s)
+
+    def test_a_long_text_is_cut_between_words(self):
+        raw = "x " * 1990 + "password=" + "s" * 50 + " " + "y" * 5000
+        self.assertNotIn("sss", clean(raw, 10_000))
 
 
 if __name__ == "__main__":
