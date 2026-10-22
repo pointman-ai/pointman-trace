@@ -3,7 +3,7 @@
 [extension]
 id = "trace"
 name = "Trace"
-version = "0.1.3"
+version = "0.1.4"
 publisher = "pointman-ai"
 summary = "Watch agents work: a thread's runs, model calls and tool calls as a live waterfall, and every trace running now."
 node = ">=0.1,<1"
@@ -36,6 +36,7 @@ default = ""
 
 [[commands]]
 kind = "trace.thread"
+machines = "any"                 # no machine named: any that runs Trace, whose pane opens on all (EXT-65)
 title = "A thread's trace"
 params = { type = "object", properties = { thread = { type = "integer", minimum = 1, description = "The thread's number; left out, the thread it's run in." } } }
 slash = "thread"
@@ -43,6 +44,7 @@ summary = "Watch a thread's agent work as a live waterfall: /trace thread, or /t
 
 [[commands]]
 kind = "trace.live"
+machines = "any"                 # no machine named: any that runs Trace, whose pane opens on all (EXT-65)
 title = "Traces running now"
 params = { type = "object", properties = {} }
 slash = "live"
@@ -54,12 +56,14 @@ description = "The run-log folder it reads, how many runs it has read, and how m
 
 [[panes]]
 id = "trace"
+machines = "all"                 # opens on every machine that runs Trace; the apps draw them as one (EXT-65)
 title = "Trace"
 format = "blocks"
 opens = ["command", "menu"]
 
 [[panes]]
 id = "live"
+machines = "all"                 # opens on every machine that runs Trace; the apps draw them as one (EXT-65)
 title = "Live traces"
 format = "blocks"
 opens = ["command", "menu"]
