@@ -6,6 +6,7 @@ made from runs' turns and kept current with patches the node takes.
 - **Checked here as the node checks it** (node/src/extensions/panes.rs) before anything goes: the node drops a
   patch that doesn't check without telling the extension, which would leave every later index out by one.
   Content that wouldn't check goes as a whole `set` of what does.
+- **Patches the node takes:** at most MAX_OPS operations each (the node's limit is 1,000); more goes as a `set`.
 - **Small enough:** a pane's content is at most 1 MiB, so a trace past FOLD_AT spans (or MAX_BYTES) goes again
   whole, with its oldest finished runs folded to their run span, until KEEP spans are left.
 - **Input and output on demand:** a `set` carries none; `open` adds a span's.
@@ -30,6 +31,7 @@ MAX_ID = 128                 # the node's, for every id
 FOLD_AT = 3000               # spans before a trace goes again with old runs folded
 KEEP = 2000                  # spans left after folding
 MAX_BYTES = 800_000          # of a pane's content, under the node's 1 MiB
+MAX_OPS = 900                # operations in one patch: the node refuses more than 1,000
 TEXT_FIELDS = ("detail", "agent", "model", "service")
 AMOUNTS = ("start_ms", "end_ms", "cost_usd", "tokens_in", "tokens_out", "tokens_cached")
 
@@ -302,7 +304,7 @@ class Waterfall:
         self.head = head
         if not ops:
             return None
-        if check(self._view()) is not None:
+        if check(self._view()) is not None or len(ops) > MAX_OPS:
             block = self.full(spawner)
             if (why := check(block)) is not None:
                 block = self._broken(why)
@@ -318,7 +320,7 @@ class Waterfall:
         """A span's input and output, as patches: `add`, since a set carries neither."""
         n = self.index.get(sid)
         t = self.owner.get(sid)
-        if n is None or t is None:
+        if n is None or t is None or self.bytes > MAX_BYTES:    # full: what more it holds must stay under 1 MiB
             return []
         if sid == t.id:
             texts = [t.prompt, None]

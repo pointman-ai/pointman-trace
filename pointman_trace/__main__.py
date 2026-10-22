@@ -20,7 +20,7 @@ except ImportError:                 # a node from before the rename
     from mb_extension import Extension, Refused  # type: ignore[no-redef]
 
 from .runs import Index, run_logs, thread_of
-from .trace import Waterfall
+from .trace import MAX_OPS, Waterfall
 
 LIVE_FOR = 2 * 3600 * 1000           # ms a finished trace stays in the Live pane
 LIVE_MAX = 12                        # traces in the Live pane at most
@@ -150,6 +150,8 @@ class LiveView:
             if got[0] == "set":
                 return self._set([x.full(idx.spawner) if x is not w else got[1] for x in shown])
             ops.extend(got[1])
+        if len(ops) > MAX_OPS:             # more than the node takes in one patch: all of it again
+            return self._set([w.full(idx.spawner) for w in shown])
         return ("patch", ops) if ops else None
 
     def _set(self, blocks: list):

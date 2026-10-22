@@ -188,6 +188,23 @@ class WaterfallTests(unittest.TestCase):
         self.assertAlmostEqual(sum(costs), 2.0, places=2)   # shared by model calls: 1 here, 3 there
         self.assertAlmostEqual(costs[0], 0.5, places=2)
 
+    def test_a_burst_past_the_nodes_patch_limit_goes_whole(self):
+        a = Log(self.dir, 1, "scene", thread=500)
+        w = self.wf()
+        w.take(self.turns())
+        w.full({})
+        for i in range(30):
+            a.say(f"q{i}", tool(f"t{i}", "Bash", command="true"))
+            a.results((f"t{i}", "", False))
+        w.take(self.turns())
+        with mock.patch.object(trace, "MAX_OPS", 20):
+            kind, block = w.update({})
+        self.assertEqual(kind, "set")
+        self.assertIsNone(check(block))
+        self.assertEqual(len(block["spans"]), 3 + 60)
+        kind, ops = w.update({}) or (None, [])
+        self.assertIsNone(kind)                           # nothing new since: nothing sent
+
     def test_check_matches_the_nodes_rules(self):
         good = {"type": "waterfall", "id": "tr", "title": "t", "state": "live", "totals": {"ms": 1, "cost_usd": None},
                 "spans": [{"id": "a", "parent": None, "kind": "agent", "name": "@a", "start_ms": 0, "end_ms": None,
