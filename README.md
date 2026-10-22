@@ -1,0 +1,53 @@
+# Trace
+
+Watch agents work. Trace shows a thread's agent work as a live waterfall in a pane beside the thread: each agent, its runs, and every model call and tool call inside them, drawn as timed bars that grow while they run. Stat tiles across the top give the duration, cost, tokens, model calls, tool calls and errors.
+
+Two views:
+
+- **`/trace thread`** in a thread opens that thread's trace. Add a number for another thread: `/trace thread 17979`.
+- **`/trace live`** shows every trace running now, newest first, then those that finished in the last 2 hours. Each is folded to its agents' bars. ↩ on one opens its full trace.
+
+Open a span to see its input and output (the first 300 characters of each).
+
+Agents open the same panes with `open_pane(extension="trace", pane="trace", target={"thread": 17979})`, or `pane="live"`.
+
+## What it reads
+
+Only the run logs of the machine it's installed on. The node writes these as each agent runs:
+- `run-N.json`: Claude Code's stream;
+- `run-N.meta.json` and `run-N.prompt`: who is running, which thread woke it, and the session's cost so far.
+
+The logs are on a Mac in `~/Library/Logs/message-board/runs`, elsewhere in `~/.local/state/message-board/runs`. Trace never reads how a run was started (its environment), and never opens `run-N.in`.
+
+Inputs and outputs have terminal colours removed. Anything that looks like a credential is hidden, such as tokens, keys, passwords and `Authorization` headers. Each is cut to 300 characters, the node's limit.
+
+## How a trace is made
+
+- **A run** is one wake of an agent. A resident session that's woken again in the same process starts another run: "Run 5358 · wake 2".
+- **A model call** starts when the model gets the conversation back: at the run's start, or when the last of its tool results is in. It runs until its last message.
+- **A tool call** runs from the call to its result. A sub-agent's calls nest under its task.
+- **Which thread a call belongs to** is the thread its agent was last working in. A run starts in the thread that woke it. A call that names another thread moves the run there, along with the model call that made it. So when one session works on several threads, each thread's trace shows only its own part.
+- **Cost** comes from Claude Code's total at the end of each run. While a run is going, its cost is blank. When one run worked on several threads, its cost is split between them by the number of model calls in each.
+- **Spans only ever append,** each one after its parent, and a running span gets its end time once it finishes. Big traces (over 3,000 spans) are sent again with their oldest finished runs folded into one bar each, so a pane stays under 1 MiB.
+
+## Settings
+
+| Setting | Default | What it does |
+|---|---|---|
+| Look back | 24 h | How far back a thread's trace starts |
+| Run logs | the node's folder | Where the run logs are |
+
+## Limits
+
+- Each machine shows its own agents' runs. A helper working on another machine needs Trace installed there too.
+- Codex runs aren't drawn yet: their log has no timestamps.
+
+## Developing
+
+```sh
+PYTHONPATH=.:tests python3 -m unittest discover -s tests
+```
+
+The end-to-end tests run the extension's process through the node's Python SDK. Point `POINTMAN_EXTENSIONS_SDK` at the SDK's folder to run them too. Without it, they're skipped.
+
+MIT licensed.

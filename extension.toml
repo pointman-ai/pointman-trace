@@ -1,0 +1,65 @@
+# Watch agents work: a thread's runs, model calls and tool calls as a live waterfall in a pane.
+
+[extension]
+id = "trace"
+name = "Trace"
+version = "0.1.0"
+publisher = "pointman-ai"
+summary = "Watch agents work: a thread's runs, model calls and tool calls as a live waterfall, and every trace running now."
+node = ">=0.1,<1"
+platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
+
+[run]
+command = ["python", "-m", "pointman_trace"]
+runtime = "python3.12"
+
+[permissions]
+network = false
+folders = ["~/Library/Logs/message-board/runs", "~/.local/state/message-board/runs"]
+
+[settings]
+type = "object"
+
+[settings.properties.hours]
+type = "number"
+title = "Look back"
+description = "Hours of a thread's agent work a trace starts with."
+minimum = 1
+maximum = 168
+default = 24
+
+[settings.properties.folder]
+type = "string"
+title = "Run logs"
+description = "The folder of this node's run logs. Empty: where the node keeps them."
+default = ""
+
+[[commands]]
+kind = "trace.thread"
+title = "A thread's trace"
+params = { type = "object", properties = { thread = { type = "integer", minimum = 1, description = "The thread's number; left out, the thread it's run in." } } }
+slash = "thread"
+summary = "Watch a thread's agent work as a live waterfall: /trace thread, or /trace thread 17979"
+
+[[commands]]
+kind = "trace.live"
+title = "Traces running now"
+params = { type = "object", properties = {} }
+slash = "live"
+summary = "Every trace running now, then those finished in the last 2 h"
+
+[[events]]
+name = "trace.status"
+description = "The run-log folder it reads, how many runs it has read, and how many trace panes are open."
+
+[[panes]]
+id = "trace"
+title = "Trace"
+format = "blocks"
+opens = ["command", "menu"]
+
+[[panes]]
+id = "live"
+title = "Live traces"
+format = "blocks"
+opens = ["command", "menu"]
