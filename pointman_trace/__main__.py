@@ -226,14 +226,15 @@ def open_live(pane):
 @ext.command("trace.thread")
 def trace_thread(job):
     n = thread_of(job.params.get("thread"))
-    return {"text": f"Opening the trace of thread {n} on {machine()}." if n else
-            f"Opening this thread's trace on {machine()}.",
+    # the pane opens on every machine running Trace, as one view (EXT-65), whichever machine answers this
+    return {"text": f"Opening the trace of thread {n}, from every machine running Trace." if n else
+            "Opening this thread's trace, from every machine running Trace.",
             "pane": {"open": "trace", "target": {"thread": n} if n else {}}}
 
 
 @ext.command("trace.live")
 def trace_live(job):
-    return {"text": f"Opening the traces running on {machine()} now, and those from the last 2 h.",
+    return {"text": "Opening the traces running now on every machine running Trace, and those from the last 2 h.",
             "pane": {"open": "live", "target": {}}}
 
 
