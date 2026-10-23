@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from collections import Counter
 from datetime import datetime
@@ -37,7 +38,10 @@ CUT = 300            # characters of a span's input or output: the node's limit
 DETAIL = 80          # characters of a span's detail
 SCAN = 4000          # characters of a long text cleaned: what's past them can't show
 FRESH = 10.0         # seconds a log with no meta file beside it still counts as starting
+CHUNK = 4 << 20      # bytes of a log read at a time
+NOTES_FOR = 8 * 86_400   # seconds a run's notes are kept: the Live list's week, and a day
 NAME = re.compile(r"^run-(\d+)\.json$")
+META = re.compile(r"^run-(\d+)\.meta\.json$")
 HANDLE = re.compile(r"board @([a-z0-9][a-z0-9_-]{0,63})")
 TITLE = re.compile(r"“([^”\n]{1,120})” \(thread (\d+)\)")
 THREAD = re.compile(r"\(thread (\d+)\)")
@@ -237,8 +241,9 @@ class Turn:
 class Run:
     """One run's log, read as it grows."""
 
-    def __init__(self, rid: int, path: Path):
+    def __init__(self, rid: int, path: Path, texts: bool = True):
         self.rid, self.path = rid, path
+        self.texts = texts                   # calls' input and output, cleaned: a summary skips them (EXT-70)
         self.offset, self.rest = 0, b""
         self.handle: str | None = None
         self.session: str | None = None
@@ -322,21 +327,25 @@ class Run:
         return text_of(msg.get("content")) or None
 
     def _read(self, size: int) -> None:
+        """Its new lines, CHUNK bytes at a time: a long run's log is tens of MB."""
         with open(self.path, "rb") as f:
             f.seek(self.offset)
-            data = f.read(size - self.offset)
-        self.offset += len(data)
-        lines = (self.rest + data).split(b"\n")
-        self.rest = lines.pop()
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(e, dict):
-                self.event(e)
+            while self.offset < size:
+                data = f.read(min(CHUNK, size - self.offset))
+                if not data:
+                    break
+                self.offset += len(data)
+                lines = (self.rest + data).split(b"\n")
+                self.rest = lines.pop()
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(e, dict):
+                        self.event(e)
 
     # ------------------------------------------------------------------ events
 
@@ -468,7 +477,7 @@ class Run:
                 tools = [x for x in llm["detail"].split(", ") if x]
                 if name not in tools:
                     llm["detail"] = clean(", ".join([*tools, name]), DETAIL)
-        if said:
+        if said and self.texts:
             texts = llm["_turn"].texts[llm["id"]]
             texts[1] = clean(" ".join(filter(None, [texts[1], *said])))
 
@@ -481,7 +490,7 @@ class Run:
                 "detail": clean(detail, DETAIL) or "", "service": service(raw), "start_ms": t, "end_ms": None,
                 "state": "running"}
         self._tag(turn, span)
-        turn.texts[span["id"]] = [clean(inp), None]
+        turn.texts[span["id"]] = [clean(inp) if self.texts else None, None]
         self.uses[b["id"]] = (turn, span, c)
         cx["open"].add(b["id"])
         if isinstance(inp, dict):
@@ -506,7 +515,8 @@ class Run:
             span["end_ms"] = t
             span["state"] = "error" if b.get("is_error") else "ok"
             raw = text_of(b.get("content"))
-            owner.texts[span["id"]][1] = clean(raw)
+            if self.texts:
+                owner.texts[span["id"]][1] = clean(raw)
             self._titles(raw)
             if span["kind"] == "task":        # its sub-agent is done
                 sub = self.ctx.pop(span["id"][2:], None)
@@ -560,11 +570,87 @@ class Run:
             self.titles[int(n)] = title
 
 
+class Notes:
+    """What each run's meta and prompt say while it's going: the thread that woke it, and the thread titles its
+    prompt names. The node takes both away when the run ends, so a run read after that, which never named a thread
+    in a tool call, would be in no thread (EXT-70: 788 of mac-m4's 1,970 runs in a week). Looked at every few
+    seconds, kept in `file` when there is one."""
+
+    def __init__(self, folder: Path, file: Path | None):
+        self.folder, self.file = Path(folder), file
+        self.runs: dict[int, dict] = {}       # run id → {"thread", "titles", "at"}
+        self.lock = threading.Lock()
+        try:
+            got = json.loads(file.read_text()) if file else {}
+            for rid, n in (got if isinstance(got, dict) else {}).items():
+                self.runs[int(rid)] = {"thread": thread_of(n.get("thread")), "at": float(n.get("at") or 0),
+                                       "titles": {int(k): str(v) for k, v in (n.get("titles") or {}).items()}}
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+
+    def look(self, now: float | None = None) -> bool:
+        """Note each run going now that isn't noted yet. True if any was."""
+        now = time.time() if now is None else now
+        try:
+            names = os.listdir(self.folder)
+        except OSError:
+            return False
+        new = {}
+        for name in names:
+            m = META.match(name)
+            if m is None or int(m.group(1)) in self.runs:
+                continue
+            rid = int(m.group(1))
+            try:
+                meta = json.loads((self.folder / name).read_text())
+            except (OSError, ValueError):
+                continue
+            run = Run(rid, self.folder / f"run-{rid}.json")
+            run._titles(run._prompt() or "")
+            thread = thread_of(meta.get("thread")) if isinstance(meta, dict) else None
+            if thread or run.titles:
+                new[rid] = {"thread": thread, "titles": run.titles, "at": now}
+        with self.lock:
+            self.runs.update(new)
+            old = [rid for rid, n in self.runs.items() if n["at"] < now - NOTES_FOR]
+            for rid in old:
+                del self.runs[rid]
+        if (new or old) and self.file is not None:
+            try:
+                self.file.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.file.with_name(self.file.name + ".tmp")
+                with self.lock:
+                    tmp.write_text(json.dumps({str(r): n for r, n in self.runs.items()}, separators=(",", ":")))
+                os.replace(tmp, self.file)
+            except OSError:
+                pass
+        return bool(new)
+
+    def seed(self, run: Run) -> None:
+        """What was noted of this run, for a reading of it that its meta and prompt are gone from."""
+        with self.lock:
+            n = self.runs.get(run.rid)
+        if n is not None:
+            run.thread = run.thread or n["thread"]
+            run.titles.update(n["titles"])
+
+
+def account(run: Run, totals: dict[str, float]) -> None:
+    """A run's cost before its first turn, when no meta said it: its session's total after the run before it, or 0
+    for a new session. Then the session's total after this run, for the next. Runs go through it oldest first."""
+    first = run.turns[0] if run.turns else None
+    if first is not None and first.before is None and first.total is not None:
+        first.before = totals.get(run.session) if run.session in totals else (0.0 if run.startup else None)
+    done = [t.total for t in run.turns if t.total is not None]
+    if done and run.session:
+        totals[run.session] = done[-1]
+
+
 class Index:
     """Every run on this node within the last `hours`, read as their logs grow."""
 
-    def __init__(self, folder: Path, hours: float = 24):
-        self.folder, self.hours = Path(folder), hours
+    def __init__(self, folder: Path, hours: float = 24, notes: Notes | None = None):
+        self.folder, self.hours, self.notes = Path(folder), hours, notes
         self.runs: dict[int, Run] = {}
         self.totals: dict[str, float] = {}    # a session → its total after the latest run read
         self.titles: dict[int, str] = {}
@@ -589,21 +675,16 @@ class Index:
                     continue
             except OSError:
                 continue
-            self.runs[int(m.group(1))] = Run(int(m.group(1)), path)
+            run = self.runs[int(m.group(1))] = Run(int(m.group(1)), path)
+            if self.notes is not None:
+                self.notes.seed(run)
         changed = False
         for rid in sorted(self.runs):
             run = self.runs[rid]
             if not run.look(now):
                 continue
             changed = True
-            first = run.turns[0] if run.turns else None
-            if first is not None and first.before is None and first.total is not None:
-                # no meta to say: the session's total after its run before this one, or 0 for a new session
-                first.before = self.totals.get(run.session) if run.session in self.totals else (
-                    0.0 if run.startup else None)
-            done = [t.total for t in run.turns if t.total is not None]
-            if done and run.session:
-                self.totals[run.session] = done[-1]
+            account(run, self.totals)
             self.titles.update(run.titles)
             for child in run.spawns:
                 if run.handle and child != run.handle:

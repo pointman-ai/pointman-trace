@@ -117,9 +117,20 @@ class ExtensionTests(unittest.TestCase):
         content = opened["result"]["blocks"]
         if content[0]["type"] == "empty":
             content = self.wait(lambda m: m.get("method") == "pane.set")["params"]["blocks"]
-        block, = content
+        block, listed = content
         self.assertEqual((block["id"], block["compact"], block["thread"], block["state"]), ("t500", True, 500, "live"))
         self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run"])
+        # the week's list after it (EXT-70): a row per thread, this one running
+        self.assertEqual((listed["type"], listed["id"], listed["days"], listed["more"]), ("traces", "recent", 7, False))
+        row, = listed["items"]
+        self.assertEqual((row["thread"], row["title"], row["state"], row["end"], row["agents"], row["machines"]),
+                         (500, "A thread", "live", None, ["scene"], ["mac-test"]))
+        # nothing older to page back to; anything but open and more is refused
+        answer = self.call("pane.input", {"pane": "pane_2", "seq": 1,
+                                          "event": {"kind": "more", "block": "recent", "before": row["start"]}})
+        self.assertEqual(answer.get("result"), {})
+        refused = self.call("pane.input", {"pane": "pane_2", "seq": 2, "event": {"kind": "tap", "block": "recent"}})
+        self.assertIn("pages back", refused["error"]["message"])
 
     def test_commands_open_their_panes(self):
         self.send("command.start", {"id": "c1", "kind": "trace.thread", "params": {"thread": 17979}}, "s1")

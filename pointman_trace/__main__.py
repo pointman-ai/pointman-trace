@@ -4,14 +4,17 @@
   thread it's run in, without n). An agent opens it with open_pane(extension="trace", pane="trace",
   target={"thread": n}).
 - `/trace live` opens the `live` pane: every trace running now, then those finished in the last 2 h, each folded
-  to its agents' bars; ↩ on one opens its full trace.
+  to its agents' bars; ↩ on one opens its full trace. Below them, the `traces` block lists every thread worked in
+  over the last 7 days, a row each, for the apps' navigator to search and filter (EXT-70); `more` pages back.
 - Once a second, while a pane is open, it reads what the run logs gained and sends each pane only its changes.
 """
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -19,25 +22,50 @@ try:
 except ImportError:                 # a node from before the rename
     from mb_extension import Extension, Refused  # type: ignore[no-redef]
 
-from .runs import Index, run_logs, thread_of
+from .history import DAYS, History, rows, summarize
+from .runs import Index, Notes, run_logs, thread_of
 from .trace import MAX_OPS, Waterfall
 
 LIVE_FOR = 2 * 3600 * 1000           # ms a finished trace stays in the Live pane
 LIVE_MAX = 12                        # traces in the Live pane at most
 IDLE = 15 * 60                       # seconds with no pane open before the index is let go
+RECENT = 200                         # rows of the week's list at first, and added by each `more`
+RECENT_MAX = 1000                    # rows at most: well within a pane's 1 MiB
+RECENT_EVERY = 10                    # seconds between sends of the list when only its numbers moved
 
 ext = Extension()
 lock = threading.RLock()
-state: dict = {"index": None, "idle_since": time.time()}
+state: dict = {"index": None, "history": None, "notes": None, "idle_since": time.time()}
 views: dict[str, tuple] = {}         # pane id → (pane, view)
+
+
+def folder() -> Path:
+    named = str(ext.settings.get("folder") or "").strip()
+    return Path(named).expanduser() if named else run_logs()
+
+
+def kept(name: str, suffix: str) -> Path | None:
+    """A file of this extension's own, in its state folder, for the run-log folder it reads."""
+    d = ext.node.get("state_dir")
+    return Path(d) / f"{name}-{hashlib.sha1(str(folder()).encode()).hexdigest()[:12]}{suffix}" if d else None
+
+
+def notes() -> Notes:
+    if state["notes"] is None:
+        state["notes"] = Notes(folder(), kept("notes", ".json"))
+    return state["notes"]
 
 
 def index() -> Index:
     if state["index"] is None:
-        folder = str(ext.settings.get("folder") or "").strip()
-        state["index"] = Index(Path(folder).expanduser() if folder else run_logs(),
-                               float(ext.settings.get("hours") or 24))
+        state["index"] = Index(folder(), float(ext.settings.get("hours") or 24), notes())
     return state["index"]
+
+
+def history() -> History:
+    if state["history"] is None:
+        state["history"] = History(folder(), kept("history", ".jsonl"), notes=notes())
+    return state["history"]
 
 
 def machine() -> str:
@@ -46,6 +74,21 @@ def machine() -> str:
 
 def empty(title: str, note: str) -> list[dict]:
     return [{"type": "empty", "id": "none", "title": title, "note": note}]
+
+
+LIST = "recent"                      # the Live pane's `traces` block
+
+
+def when(v) -> int | None:
+    """An ISO time (or epoch ms) as epoch ms."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v)
+    if isinstance(v, str) and v:
+        try:
+            return int(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            return None
+    return None
 
 
 class ThreadView:
@@ -112,10 +155,25 @@ class LiveView:
         self.wfs: dict[int, Waterfall] = {}
         self.order: list[int] | None = None
         self.shown: list | None = None
+        self.memo: dict[int, tuple[int, dict]] = {}    # a run the Index has → (its version, its summary)
+        self.all: list[dict] = []                      # the week's rows, as last worked out
+        self.oldest: int | None = None                 # the last activity of the oldest finished row shown
+        self.floor: int | None = None                  # epoch ms: rows back to this, after `more`
+        self.listed: dict | None = None                # the list's items, more and loading, as the apps have them
+        self.listed_at = 0.0
 
     def update(self, idx: Index):
         if not idx.loaded:
             return self._set(empty("Reading the run logs…", f"Agents' runs on {machine()}."))
+        heads, ops = self._heads(idx)
+        listed = self._list(idx)
+        if heads is not None:
+            return self._set(heads + [self._block(listed)])
+        ops.extend(self._list_ops(listed))
+        return ("patch", ops) if ops else None
+
+    def _heads(self, idx: Index) -> tuple[list | None, list]:
+        """The compact waterfalls: (all of them, to set) or (None, their patches)."""
         now = int(time.time() * 1000)
         recent: dict[int, list] = {}
         for t in idx.turns():
@@ -136,23 +194,78 @@ class LiveView:
         shown = (running + done)[:max(LIVE_MAX, len(running))]
         order = [w.thread for w in shown]
         if not shown:
+            first = self.order != [] or self.listed is None
             self.order = []
-            return self._set(empty("Nothing running", f"Agents' work on {machine()} shows here as it starts, and "
-                                                      "for 2 h after it ends."))
-        if order != self.order:
+            return (empty("Nothing running", f"Agents' work on {machine()} shows here as it starts, and for 2 h "
+                                             "after it ends.") if first else None), []
+        if order != self.order or self.listed is None:
             self.order = order
-            return self._set([w.full(idx.spawner) for w in shown])
+            return [w.full(idx.spawner) for w in shown], []
         ops: list[dict] = []
         for w in shown:
             got = w.update(idx.spawner)
             if got is None:
                 continue
             if got[0] == "set":
-                return self._set([x.full(idx.spawner) if x is not w else got[1] for x in shown])
+                return [x.full(idx.spawner) if x is not w else got[1] for x in shown], []
             ops.extend(got[1])
-        if len(ops) > MAX_OPS:             # more than the node takes in one patch: all of it again
-            return self._set([w.full(idx.spawner) for w in shown])
-        return ("patch", ops) if ops else None
+        if len(ops) > MAX_OPS - 3:         # more than the node takes in one patch, with the list's: all of it again
+            return [w.full(idx.spawner) for w in shown], []
+        return None, ops
+
+    # ------------------------------------------------------------------ the week's list (EXT-70)
+
+    def _list(self, idx: Index) -> dict:
+        """The rows shown now: the newest RECENT (every running one, however many), or back to `floor` after
+        `more`; at most RECENT_MAX."""
+        summaries = {s["rid"]: s for s in history().snapshot()}
+        for rid, run in idx.runs.items():
+            memo = self.memo.get(rid)
+            if memo is None or memo[0] != run.version:
+                memo = self.memo[rid] = (run.version, summarize(run))
+            summaries[rid] = memo[1]
+        for rid in [r for r in self.memo if r not in idx.runs]:
+            del self.memo[rid]
+        self.all = rows([summaries[r] for r in sorted(summaries)], idx.titles, ext.node.get("machine") or None,
+                        int(time.time() * 1000))
+        live = sum(r["state"] == "live" for r in self.all)
+        shown = self.all[:max(RECENT, live)]
+        if self.floor is not None:
+            shown = [r for r in self.all if r["state"] == "live" or r["_end"] >= self.floor] or shown
+        shown = shown[:max(RECENT_MAX, live)]
+        self.oldest = min((r["_end"] for r in shown if r["state"] == "done"), default=None)
+        return {"more": len(shown) < len(self.all), "loading": history().loading,
+                "items": [{k: v for k, v in r.items() if k != "_end"} for r in shown]}
+
+    def _block(self, listed: dict) -> dict:
+        self.listed, self.listed_at = listed, time.time()
+        return {"type": "traces", "id": LIST, "days": DAYS, **listed}
+
+    def _list_ops(self, listed: dict, now: bool = False) -> list[dict]:
+        """The list's changes as `replace`s: at once when a row comes, goes, moves or changes state, or `more`
+        or `loading` does; numbers alone at most every RECENT_EVERY seconds."""
+        was = self.listed or {}
+        if listed == was:
+            return []
+        same = [(r["thread"], r["state"]) for r in listed["items"]] == [(r["thread"], r["state"])
+                                                                         for r in was.get("items", [])]
+        if (not now and same and listed["more"] == was.get("more") and listed["loading"] == was.get("loading")
+                and time.time() - self.listed_at < RECENT_EVERY):
+            return []
+        ops = [{"op": "replace", "path": f"/b/{LIST}/{k}", "value": v} for k, v in listed.items() if was.get(k) != v]
+        self._block(listed)
+        return ops
+
+    def more(self, before) -> list[dict]:
+        """`more`: up to RECENT rows more, finished before `before` (an ISO time, or the oldest row shown)."""
+        if self.listed is None:
+            return []
+        at = when(before) or self.oldest
+        older = [r["_end"] for r in self.all if r["state"] == "done" and at is not None and r["_end"] < at][:RECENT]
+        if not older:
+            return []
+        self.floor = min(older) if self.floor is None else min(self.floor, min(older))
+        return self._list_ops(self._list(index()), now=True)
 
     def _set(self, blocks: list):
         if blocks == self.shown:
@@ -181,10 +294,12 @@ def opened(pane, view) -> dict:
     """A pane's first content, and how it answers inputs and closes."""
     @pane.on_input
     def tapped(event):
-        if event.get("kind") != "open":
-            raise Refused("a trace only opens its spans")
+        kind = event.get("kind")
+        listed = isinstance(view, LiveView) and event.get("block") in (None, LIST)
+        if kind != "open" and not (kind == "more" and listed):
+            raise Refused("a trace only opens its spans, and the Live pane's list pages back with `more`")
         with lock:
-            ops = view.open(event.get("block"), event.get("span"))
+            ops = view.open(event.get("block"), event.get("span")) if kind == "open" else view.more(event.get("before"))
             if ops:
                 pane.patch(ops)
 
@@ -220,6 +335,8 @@ def open_trace(pane):
 
 @ext.pane("live")
 def open_live(pane):
+    with lock:
+        history().start()                # the week's list: from what's kept, and what's new read behind it
     return opened(pane, LiveView())
 
 
@@ -234,7 +351,8 @@ def trace_thread(job):
 
 @ext.command("trace.live")
 def trace_live(job):
-    return {"text": "Opening the traces running now on every machine running Trace, and those from the last 2 h.",
+    return {"text": f"Opening the traces running now on every machine running Trace, and the last {DAYS} days' "
+                    "list.",
             "pane": {"open": "live", "target": {}}}
 
 
@@ -243,14 +361,19 @@ def tick() -> None:
         if not views:
             if state["index"] is not None and time.time() - state["idle_since"] > IDLE:
                 state["index"] = None        # nobody's watching: let its memory go
+                state["history"] = None
             return
         idx = index()
         idx.refresh()
+        listing = any(isinstance(v, LiveView) for _, v in views.values())
+        if listing:
+            history().start()                # newly finished runs, every AGAIN seconds
         now = time.time()
         for pane, view in list(views.values()):
-            if view.seen == idx.version and now - view.at < 30:   # nothing new: only the Live pane's 2 h moves
+            seen = (idx.version, history().version if isinstance(view, LiveView) else None)
+            if view.seen == seen and now - view.at < 30:   # nothing new: only the Live pane's 2 h moves
                 continue
-            view.seen, view.at = idx.version, now
+            view.seen, view.at = seen, now
             title = view.title
             got = view.update(idx)
             if view.title != title:
@@ -263,12 +386,22 @@ def tick() -> None:
 def settings_changed(_settings) -> None:
     with lock:
         state["index"] = None
+        state["history"] = None
+        state["notes"] = None
         for pane, view in views.values():
             view.reset()
             view.seen = None
 
 
+def note() -> None:
+    """Each run's thread while it's going, for reading it after it ends (EXT-70): panes or none."""
+    with lock:
+        took = notes()
+    took.look()
+
+
 ext.every(1, tick, lane="trace")
+ext.every(5, note, lane="notes")
 
 if __name__ == "__main__":
     ext.run()

@@ -3,9 +3,9 @@
 [extension]
 id = "trace"
 name = "Trace"
-version = "0.1.5"
+version = "0.2.0"
 publisher = "pointman-ai"
-summary = "Watch agents work: a thread's runs, model calls and tool calls as a live waterfall, and every trace running now."
+summary = "Watch agents work: a thread's runs, model calls and tool calls as a live waterfall, every trace running now, and the last 7 days'."
 node = ">=0.1,<1"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
 
@@ -48,7 +48,7 @@ machines = "any"                 # no machine named: any that runs Trace, whose 
 title = "Traces running now"
 params = { type = "object", properties = {} }
 slash = "live"
-summary = "Every trace running now, then those finished in the last 2 h"
+summary = "Every trace running now, then those finished in the last 2 h, and a row for each of the last 7 days' traces"
 
 [[events]]
 name = "trace.status"

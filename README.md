@@ -5,7 +5,7 @@ Watch agents work. Trace shows a thread's agent work as a live waterfall in a pa
 Two views:
 
 - **`/trace thread`** in a thread opens that thread's trace. Add a number for another thread: `/trace thread 17979`.
-- **`/trace live`** shows every trace running now, newest first, then those that finished in the last 2 hours. Each is folded to its agents' bars. ↩ on one opens its full trace.
+- **`/trace live`** shows every trace running now, newest first, then those that finished in the last 2 hours. Each is folded to its agents' bars. ↩ on one opens its full trace. Below them is a row for each thread worked in over the last 7 days, with its agents, when it ran and its totals. The apps search and filter these rows.
 
 Open a span to see its input and output (the first 300 characters of each).
 
@@ -20,6 +20,13 @@ Only the run logs of the machine it's installed on. The node writes these as eac
 The logs are on a Mac in `~/Library/Logs/message-board/runs`, elsewhere in `~/.local/state/message-board/runs`. Trace never reads how a run was started (its environment), and never opens `run-N.in`.
 
 Inputs and outputs have terminal colours removed. Anything that looks like a credential is hidden: tokens and keys (AWS, Stripe, GitHub, Slack, Anthropic, JWTs), private keys, passwords in URLs, `Authorization` headers, and any value whose name contains KEY, TOKEN, SECRET or PASS. Each is cut to 300 characters, the node's limit.
+
+## The last 7 days
+
+The Live pane's list has a row for each thread agents worked in on this machine over the last 7 days. It shows the newest 200 first, and asks for 200 more at a time.
+
+- **Each run is read once.** A finished run's log doesn't change, so Trace sums it up once and keeps the summary in its own state folder. A week on a busy machine (about 2,000 runs, 1.3 GB of logs) takes a few seconds the first time, in the background. After that, only new runs are read.
+- **The thread that woke a run** is in its meta file only while it runs. Trace notes it every 5 seconds, so a run that never posted is still listed under its thread afterwards. Runs that finished before Trace 0.2.0 was installed can't be placed this way, so a run of those that never named a thread isn't listed.
 
 ## How a trace is made
 

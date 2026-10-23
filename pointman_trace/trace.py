@@ -97,6 +97,25 @@ def size(v) -> int:
     return len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode())
 
 
+def tally(turns, thread: int | None) -> dict:
+    """A waterfall's totals but its time, for these turns' work in a thread (all of it, for None): the Live list's
+    rows add up the same (EXT-70)."""
+    llm = tools = errors = tokens = cached = 0
+    cost = 0.0
+    for t in turns:
+        for s in t.mine(thread):
+            if s["kind"] == "llm":
+                llm += 1
+                tokens += s["tokens_in"] + s["tokens_out"]
+                cached += s["tokens_cached"]
+            else:
+                tools += 1
+                errors += s["state"] == "error"
+        cost += t.span(thread)["cost_usd"] or 0.0
+    return {"cost_usd": cost, "tokens": tokens, "tokens_cached": cached, "llm_calls": llm, "tool_calls": tools,
+            "errors": errors}
+
+
 class Waterfall:
     """One waterfall block as the apps have it: a thread's turns, its agents above them. `compact` keeps only the
     agents and their runs (the Live pane's)."""
@@ -171,20 +190,8 @@ class Waterfall:
         return out
 
     def _totals(self) -> dict:
-        llm = tools = errors = tokens = cached = 0
-        cost = 0.0
-        for t in self.turns.values():
-            for s in t.mine(self.thread):
-                if s["kind"] == "llm":
-                    llm += 1
-                    tokens += s["tokens_in"] + s["tokens_out"]
-                    cached += s["tokens_cached"]
-                else:
-                    tools += 1
-                    errors += s["state"] == "error"
-            cost += t.span(self.thread)["cost_usd"] or 0.0
-        return {"ms": max(0, self.last - self.first), "cost_usd": round(cost, 2), "tokens": tokens,
-                "tokens_cached": cached, "llm_calls": llm, "tool_calls": tools, "errors": errors}
+        got = tally(self.turns.values(), self.thread)
+        return {"ms": max(0, self.last - self.first), **got, "cost_usd": round(got["cost_usd"], 2)}
 
     def _rel(self, s: dict) -> dict:
         """A span as the block has it: its times from `started`, the rest made to check (nothing below 0, text
