@@ -172,6 +172,19 @@ class Paging(Base):
         self.assertEqual(view.more(None), [])                  # nothing older
         self.assertIsNone(view.update(idx))                    # and nothing new
 
+    def test_more_from_another_machines_older_end_brings_the_rows_between(self):
+        # the apps send the merged list's oldest end to every machine (17979 [19321]): here it's older than all of
+        # this machine's rows, so none is "before" it, yet the three past the first page must still come
+        for n in range(5):
+            self.run_log(n + 1, "scene", 501 + n, n * 60_000, 0.1)
+        m, idx = self.live()
+        view = m.LiveView()
+        view.update(idx)
+        ops = view.more("2026-01-01T00:00:00.000Z")
+        got = {op["path"]: op["value"] for op in ops}
+        self.assertEqual(([r["thread"] for r in got["/b/recent/items"]], got["/b/recent/more"]),
+                         ([505, 504, 503, 502, 501], False))
+
     def test_numbers_alone_wait_a_few_seconds(self):
         self.run_log(1, "scene", 501, 0, 0.1)
         going = self.run_log(2, "loupe", 502, 60_000, 0, live=True)

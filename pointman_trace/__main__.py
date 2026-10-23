@@ -257,14 +257,17 @@ class LiveView:
         return ops
 
     def more(self, before) -> list[dict]:
-        """`more`: up to RECENT rows more, finished before `before` (an ISO time, or the oldest row shown)."""
+        """`more`: every row back to `before` (an ISO time, or the oldest row shown), and up to RECENT finished before
+        it. The apps send the merged list's oldest `end` to every machine, which can be older than this one's oldest
+        row: the rows between them come too, or they'd never show (waterfall's navigator, 17979 [19321])."""
         if self.listed is None:
             return []
         at = when(before) or self.oldest
-        older = [r["_end"] for r in self.all if r["state"] == "done" and at is not None and r["_end"] < at][:RECENT]
-        if not older:
+        if at is None:
             return []
-        self.floor = min(older) if self.floor is None else min(self.floor, min(older))
+        older = [r["_end"] for r in self.all if r["state"] == "done" and r["_end"] < at][:RECENT]
+        floor = min(older) if older else at
+        self.floor = floor if self.floor is None else min(self.floor, floor)
         return self._list_ops(self._list(index()), now=True)
 
     def _set(self, blocks: list):
