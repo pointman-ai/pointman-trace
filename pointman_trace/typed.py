@@ -3,7 +3,8 @@ waterfall block" and "The traces block"). trace.py and the panes make them as di
 tested without the SDK; these turn them into the messages the SDK sends, as they go.
 
 - A block's `id` is its `name`, unique in the pane: edits and inputs say it.
-- A thread is a ThreadId (`thr_17979`), an agent a MemberRef by its handle, a machine a MachineId by its name.
+- A thread is a ThreadId (`thr_17979`), an agent a MemberRef by its handle, a machine a MachineId by its name (a
+  waterfall's says where its runs were, so a pane on every machine merges them by it).
 - An edit is a `put_items` of a waterfall's spans (the only items Trace puts), or a `replace` of a block, keeping its
   items or not.
 """
@@ -52,7 +53,8 @@ def waterfall(b: dict) -> Block:
     return Block(name=b["id"], view=View(waterfall=WaterfallView(
         title=b["title"], state=WaterfallView.State[f"STATE_{b['state'].upper()}"], started=when(b.get("started")),
         totals=totals(b.get("totals")), compact=bool(b.get("compact")),
-        thread=thread_id(b["thread"]) if b.get("thread") else None, spans=[span(s) for s in b.get("spans") or []])))
+        thread=thread_id(b["thread"]) if b.get("thread") else None, spans=[span(s) for s in b.get("spans") or []],
+        machine=types.MachineId(value=b["machine"]) if b.get("machine") else None)))
 
 
 def row(r: dict) -> TracesView.Row:

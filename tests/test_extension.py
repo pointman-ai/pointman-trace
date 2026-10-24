@@ -54,6 +54,7 @@ class ExtensionTests(unittest.TestCase):
         view.wait(lambda v: len(self.spans(v, "tr")) == 4)    # the logs weren't read yet: the next tick sets it
         wf = view.block("tr").view.waterfall
         self.assertEqual((wf.title, wf.state), ("A thread", types.WaterfallView.State.STATE_LIVE))
+        self.assertEqual(wf.machine, types.MachineId(value="mac-test"))     # the apps merge every machine's by it
         self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN, Span.Kind.KIND_LLM,
                                                       Span.Kind.KIND_TOOL])
         self.assertEqual(wf.spans[3].agent, types.MemberRef(handle="scene"))

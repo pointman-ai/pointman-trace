@@ -121,7 +121,7 @@ class ThreadView:
             if not turns:
                 return self._empty("No agent work here yet", f"Nothing in the last {idx.hours:g} h on {machine()}: "
                                                              "it shows here as it starts.")
-            self.wf = Waterfall("tr", idx.title(self.thread))
+            self.wf = Waterfall("tr", idx.title(self.thread), machine=ext.node.get("machine") or None)
             self.wf.take(turns)
             return "set", [self.wf.full(idx.spawner)]
         self.wf.title = idx.title(self.thread)
@@ -185,7 +185,8 @@ class LiveView:
         for n, turns in recent.items():
             wf = self.wfs.get(n)
             if wf is None:
-                wf = self.wfs[n] = Waterfall(f"t{n}", idx.title(n), thread=n, compact=True)
+                wf = self.wfs[n] = Waterfall(f"t{n}", idx.title(n), thread=n, compact=True,
+                                            machine=ext.node.get("machine") or None)
             wf.title = idx.title(n)
             wf.take(turns)
         for n, wf in list(self.wfs.items()):
