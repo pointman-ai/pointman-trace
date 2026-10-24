@@ -1,144 +1,174 @@
-"""The extension's process as the node runs it: JSON-RPC lines on stdin and stdout, through the Python SDK.
+"""The extension's process as a node runs it, through the SDK's stand-in node (pointman_extension_testing): the
+typed protocol both ways, and each pane's content as an app has it, with every set and edit applied.
 
 The SDK comes with the node, so this runs where $POINTMAN_EXTENSIONS_SDK names its folder (the node's own
 variable, for tests), and is skipped elsewhere.
 """
 
-import json
+import importlib
 import os
-import queue
-import subprocess
 import sys
 import tempfile
-import threading
-import time
+import types as pytypes
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from pointman_trace.trace import check
+from pointman_trace.runs import Index
 
 from helpers import Log, text, tool
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = os.environ.get("POINTMAN_EXTENSIONS_SDK")
+TYPED = bool(SDK and Path(SDK, "pointman_extension_types.py").is_file())
+
+if TYPED:
+    sys.path.insert(0, SDK)
+    import pointman_extension_types as types
+    from pointman_extension_testing import InputRefused, StandInNode
+
+    Span = types.WaterfallView.Span
 
 
-@unittest.skipUnless(SDK and Path(SDK, "pointman_extension.py").is_file(), "needs the node's Python SDK")
+@unittest.skipUnless(TYPED, "needs the node's typed Python SDK")
 class ExtensionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.dir = Path(self.tmp.name)
-        env = {**os.environ, "PYTHONPATH": os.pathsep.join([SDK, str(ROOT)])}
-        self.proc = subprocess.Popen([sys.executable, "-m", "pointman_trace"], cwd=ROOT, env=env, text=True,
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.lines: queue.Queue = queue.Queue()
-        self.seen = []
-        threading.Thread(target=self._read, daemon=True).start()
-        self.n = 0
-        self.call("initialize", {"protocol": 1, "node": "0.1.0", "machine": "mac-test",
-                                 "settings": {"folder": str(self.dir)}})
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name, "runs")
+        self.dir.mkdir()
+        self.node = StandInNode(ROOT, settings={"folder": str(self.dir)}, machine="mac-test",
+                                state_dir=Path(self.tmp.name, "state"))
+        self.node.start()
+        self.addCleanup(self.node.stop)
 
-    def tearDown(self):
-        try:
-            self.call("shutdown", {})
-        finally:
-            self.proc.stdin.close()
-            self.proc.wait(5)
-            self.proc.stdout.close()
-            self.proc.stderr.close()
-            self.tmp.cleanup()
-
-    def _read(self):
-        for line in self.proc.stdout:
-            self.lines.put(json.loads(line))
-
-    def send(self, method, params, rid=None):
-        msg = {"jsonrpc": "2.0", "method": method, "params": params}
-        if rid is not None:
-            msg["id"] = rid
-        self.proc.stdin.write(json.dumps(msg) + "\n")
-        self.proc.stdin.flush()
-
-    def call(self, method, params):
-        self.n += 1
-        rid = f"n{self.n}"
-        self.send(method, params, rid)
-        return self.wait(lambda m: m.get("id") == rid)
-
-    def wait(self, want, timeout=10.0):
-        """The next message `want` takes; anything else before it is kept in self.seen."""
-        end = time.time() + timeout
-        while time.time() < end:
-            try:
-                m = self.lines.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            self.seen.append(m)
-            if want(m):
-                return m
-        self.fail(f"nothing came: {self.seen[-5:]}")
+    def spans(self, view, name):
+        b = view.block(name)
+        return b.view.waterfall.spans if b is not None else []
 
     def test_a_thread_trace_opens_grows_and_shows_a_span(self):
         log = Log(self.dir, 1, "scene", thread=500)
         log.say("q1", tool("t1", "Bash", command="echo hi", description="Say hi"))
-        opened = self.call("pane.open", {"pane": "pane_1", "open": "trace", "target": {"thread": 500},
-                                         "context": {}, "viewer": {"person": "james"}})
-        result = opened["result"]
-        self.assertEqual(result["format"], "blocks")
-        content = result["blocks"]
-        if content[0]["type"] == "empty":             # the logs weren't read yet: the next tick sets it
-            content = self.wait(lambda m: m.get("method") == "pane.set")["params"]["blocks"]
-        block, = content
-        self.assertEqual(block["type"], "waterfall")
-        self.assertIsNone(check(block))
-        self.assertEqual(block["title"], "A thread")
-        self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run", "llm", "tool"])
+        view = self.node.open_pane("trace", {"thread": 500})
+        self.assertEqual(view.format, types.PaneFormat.PANE_FORMAT_BLOCKS)
+        view.wait(lambda v: len(self.spans(v, "tr")) == 4)    # the logs weren't read yet: the next tick sets it
+        wf = view.block("tr").view.waterfall
+        self.assertEqual((wf.title, wf.state), ("A thread", types.WaterfallView.State.STATE_LIVE))
+        self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN, Span.Kind.KIND_LLM,
+                                                      Span.Kind.KIND_TOOL])
+        self.assertEqual(wf.spans[3].agent, types.MemberRef(handle="scene"))
 
+        sets = sum(m == "pane.set" for m, _ in view.frames)
         log.results(("t1", "hi", False))
-        patch = self.wait(lambda m: m.get("method") == "pane.patch")["params"]["patch"]
-        paths = [op["path"] for op in patch]
-        self.assertIn("/b/tr/spans/3/state", paths)
-        self.assertIn("/b/tr/spans/-", paths)          # the next model call
+        view.wait(lambda v: len(self.spans(v, "tr")) == 5)
+        tool_span = next(s for s in self.spans(view, "tr") if s.id == "t:t1")
+        self.assertEqual(tool_span.state, Span.State.STATE_OK)
+        self.assertEqual(sum(m == "pane.set" for m, _ in view.frames), sets)     # it grew by edits, not again whole
+        method, last = view.frames[-1]
+        self.assertEqual(method, "pane.edit")
+        self.assertIn("t:t1", [i.span.id for e in last.edits if e.put_items for i in e.put_items.items])
 
-        answer = self.call("pane.input", {"pane": "pane_1", "seq": 1,
-                                          "event": {"kind": "open", "block": "tr", "span": "t:t1"}})
-        self.assertEqual(answer.get("result"), {})
-        shown = next(m for m in self.seen if m.get("method") == "pane.patch" and "/input" in json.dumps(m))
-        self.assertEqual({op["path"] for op in shown["params"]["patch"]},
-                         {"/b/tr/spans/3/input", "/b/tr/spans/3/output"})
-        refused = self.call("pane.input", {"pane": "pane_1", "seq": 2, "event": {"kind": "tap", "block": "tr"}})
-        self.assertIn("only opens", refused["error"]["message"])
+        view.input("open", block="tr", span="t:t1")
+        tool_span = next(s for s in self.spans(view, "tr") if s.id == "t:t1")
+        self.assertIn("echo hi", tool_span.input)
+        self.assertEqual(tool_span.output, "hi")
+        with self.assertRaises(InputRefused) as refused:
+            view.input("tap", block="tr")
+        self.assertIn("only opens", str(refused.exception))
+        self.assertEqual(view.problems, [])
+
+    def test_a_pane_opened_from_a_thread_shows_that_thread(self):
+        Log(self.dir, 1, "scene", thread=500).say("q1", text("thinking"))
+        view = self.node.open_pane("trace", context=types.PaneContext(thread=types.ThreadId(value="thr_500")))
+        view.wait(lambda v: v.block("tr") is not None)
+        self.assertEqual((view.title, view.block("tr").view.waterfall.title), ("Trace · A thread", "A thread"))
 
     def test_live_lists_running_traces(self):
         log = Log(self.dir, 1, "scene", thread=500)
         log.say("q1", text("thinking"))
-        opened = self.call("pane.open", {"pane": "pane_2", "open": "live", "target": {}, "context": {},
-                                         "viewer": {"person": "james"}})
-        content = opened["result"]["blocks"]
-        if content[0]["type"] == "empty":
-            content = self.wait(lambda m: m.get("method") == "pane.set")["params"]["blocks"]
-        block, listed = content
-        self.assertEqual((block["id"], block["compact"], block["thread"], block["state"]), ("t500", True, 500, "live"))
-        self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run"])
+        view = self.node.open_pane("live")
+        view.wait(lambda v: v.block("t500") is not None and v.block("recent") is not None
+                  and v.block("recent").view.traces.items)
+        wf = view.block("t500").view.waterfall
+        self.assertEqual((wf.compact, wf.thread.value, wf.state), (True, "thr_500",
+                                                                   types.WaterfallView.State.STATE_LIVE))
+        self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN])
         # the week's list after it (EXT-70): a row per thread, this one running
-        self.assertEqual((listed["type"], listed["id"], listed["days"], listed["more"]), ("traces", "recent", 7, False))
-        row, = listed["items"]
-        self.assertEqual((row["thread"], row["title"], row["state"], row["end"], row["agents"], row["machines"]),
-                         (500, "A thread", "live", None, ["scene"], ["mac-test"]))
+        self.assertEqual([b.name for b in view.blocks], ["t500", "recent"])
+        listed = view.block("recent").view.traces
+        self.assertEqual((listed.days, listed.more), (7, False))
+        row, = listed.items
+        self.assertEqual((row.thread.value, row.title, row.state, row.end, row.agents, row.machines),
+                         ("thr_500", "A thread", types.WaterfallView.State.STATE_LIVE, None,
+                          [types.MemberRef(handle="scene")], [types.MachineId(value="mac-test")]))
         # nothing older to page back to; anything but open and more is refused
-        answer = self.call("pane.input", {"pane": "pane_2", "seq": 1,
-                                          "event": {"kind": "more", "block": "recent", "before": row["start"]}})
-        self.assertEqual(answer.get("result"), {})
-        refused = self.call("pane.input", {"pane": "pane_2", "seq": 2, "event": {"kind": "tap", "block": "recent"}})
-        self.assertIn("pages back", refused["error"]["message"])
+        view.input("more", block="recent", before=row.start.isoformat())
+        with self.assertRaises(InputRefused) as refused:
+            view.input("tap", block="recent")
+        self.assertIn("pages back", str(refused.exception))
+        self.assertEqual(view.problems, [])
 
     def test_commands_open_their_panes(self):
-        self.send("command.start", {"id": "c1", "kind": "trace.thread", "params": {"thread": 17979}}, "s1")
-        done = self.wait(lambda m: m.get("method") == "done")["params"]["result"]
-        self.assertEqual(done["pane"], {"open": "trace", "target": {"thread": 17979}})
-        self.send("command.start", {"id": "c2", "kind": "trace.live", "params": {}}, "s2")
-        done = self.wait(lambda m: m.get("method") == "done" and m["params"]["id"] == "c2")["params"]["result"]
-        self.assertEqual(done["pane"], {"open": "live", "target": {}})
+        done = self.node.run("trace.thread", {"thread": 17979})
+        self.assertEqual(done.result["pane"], {"open": "trace", "target": {"thread": 17979}})
+        done = self.node.run("trace.live", {})
+        self.assertEqual(done.result["pane"], {"open": "live", "target": {}})
+
+    def test_new_settings_start_it_again_on_them(self):
+        other = Path(self.tmp.name, "other")
+        other.mkdir()
+        Log(other, 1, "loupe", thread=600).say("q1", text("over here"))
+        self.node.restart({"folder": str(other)})
+        view = self.node.open_pane("trace", {"thread": 600})
+        view.wait(lambda v: v.block("tr") is not None)
+        self.assertEqual(self.spans(view, "tr")[0].id, "a:loupe")
+
+
+@unittest.skipUnless(TYPED, "needs the node's typed Python SDK")
+class TickTests(unittest.TestCase):
+    def main(self):
+        """The extension's module, as the node starts it (its manifest beside its __main__)."""
+        fake = pytypes.ModuleType("__main__")
+        fake.__file__ = str(ROOT / "pointman_trace" / "__main__.py")
+        real, sys.modules["__main__"] = sys.modules["__main__"], fake
+        try:
+            return importlib.import_module("pointman_trace.__main__")
+        finally:
+            sys.modules["__main__"] = real
+
+    def test_edits_that_wont_apply_send_it_all_next_tick(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        log = Log(Path(tmp.name), 1, "scene", thread=500)
+        log.say("q1", text("thinking"))
+        m = self.main()
+        self.addCleanup(m.state.update, dict(m.state))
+        m.state.update(index=Index(Path(tmp.name), hours=10**6))
+        sent = []
+
+        class Pane:
+            id = "pane_1"
+
+            def set(self, blocks):
+                sent.append("set")
+
+            def edit(self, edits):
+                sent.append("edit")
+                raise ValueError("no block 'tr'")
+
+            def set_title(self, title):
+                pass
+
+        pane = Pane()
+        m.views[pane.id] = (pane, m.ThreadView(500))
+        self.addCleanup(m.views.clear)
+        with mock.patch.object(m.ext, "panes", lambda: [pane]), mock.patch.object(m.ext, "event"), \
+                mock.patch.object(m.ext, "log"):
+            m.tick()
+            log.say("q2", tool("t1", "Bash", command="ls"))
+            m.tick()                     # refused: the view starts again
+            m.tick()
+        self.assertEqual(sent, ["set", "edit", "set"])
 
 
 if __name__ == "__main__":

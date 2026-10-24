@@ -1,15 +1,16 @@
 """The waterfall block (docs/dev/panes.md, "The waterfall block"; loupe's shape, Pointman thread 17979 [18057]),
-made from runs' turns and kept current with patches the node takes.
+made from runs' turns and kept current with edits the node takes. Blocks and edits are dicts here, in the docs'
+shape; typed.py makes them the protocol's messages as they go.
 
-- **Spans only append,** each after its parent, so a span's index never changes: new ones go on the end
-  (`add /b/<id>/spans/-`), and a changed field is set where it is (`add /b/<id>/spans/<n>/end_ms`).
-- **Checked here as the node checks it** (node/src/extensions/panes.rs) before anything goes: the node drops a
-  patch that doesn't check without telling the extension, which would leave every later index out by one.
-  Content that wouldn't check goes as a whole `set` of what does.
-- **Patches the node takes:** at most MAX_OPS operations each (the node's limit is 1,000); more goes as a `set`.
+- **Spans only append,** each after its parent: a new one goes on the end, and one that changed is sent again
+  whole where it is, both by its id (`put_items`). The block's own fields (its state and totals) go as a `replace`
+  that keeps its spans.
+- **Checked here as the node checks it** (node/src/extensions/panes.rs) before anything goes: the node drops edits
+  whose result doesn't check, and every later span under one it dropped would be dropped too. Content that
+  wouldn't check goes as a whole `set` of what does.
 - **Small enough:** a pane's content is at most 1 MiB, so a trace past FOLD_AT spans (or MAX_BYTES) goes again
   whole, with its oldest finished runs folded to their run span, until KEEP spans are left.
-- **Input and output on demand:** a `set` carries none; `open` adds a span's.
+- **Input and output on demand:** a `set` carries none; `open` puts a span again with its own.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ MAX_ID = 128                 # the node's, for every id
 FOLD_AT = 3000               # spans before a trace goes again with old runs folded
 KEEP = 2000                  # spans left after folding
 MAX_BYTES = 800_000          # of a pane's content, under the node's 1 MiB
-MAX_OPS = 900                # operations in one patch: the node refuses more than 1,000
 TEXT_FIELDS = ("detail", "agent", "model", "service")
 AMOUNTS = ("start_ms", "end_ms", "cost_usd", "tokens_in", "tokens_out", "tokens_cached")
 
@@ -93,6 +93,16 @@ def check(block: dict) -> str | None:
     return None
 
 
+def put_spans(bid: str, spans: list[dict]) -> dict:
+    """An edit: a waterfall's spans, each whole and by its id, replaced where it is or added at the end."""
+    return {"put_items": {"block": bid, "items": [dict(s) for s in spans]}}
+
+
+def keep_spans(block: dict) -> dict:
+    """An edit: a block's own fields (its title, state and totals), its spans kept as they are."""
+    return {"replace": {"block": block, "keep_items": True}}
+
+
 def size(v) -> int:
     return len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode())
 
@@ -120,10 +130,8 @@ class Waterfall:
     """One waterfall block as the apps have it: a thread's turns, its agents above them. `compact` keeps only the
     agents and their runs (the Live pane's)."""
 
-    def __init__(self, bid: str, title: str, *, thread: int | None = None, compact: bool = False,
-                 machine: str | None = None):
+    def __init__(self, bid: str, title: str, *, thread: int | None = None, compact: bool = False):
         self.bid, self.title, self.thread, self.compact = bid, title, thread, compact
-        self.machine = machine                 # where its runs were: the apps merge every machine's (EXT-65)
         self.turns: dict[str, Turn] = {}       # every turn it has shown, kept while it's open
         self.started: int | None = None        # epoch ms its times count from
         self.sent: list[dict] | None = None    # its spans as the apps have them
@@ -164,7 +172,7 @@ class Waterfall:
             running = any(r["end_ms"] is None for r in rs)
             boss = spawner.get(handle)
             out.append({"id": f"a:{handle}", "parent": f"a:{boss}" if boss in agents and boss != handle else None,
-                        "kind": "agent", "name": f"@{handle}", "agent": handle, **self._on(),
+                        "kind": "agent", "name": f"@{handle}", "agent": handle,
                         "model": models.most_common(1)[0][0] if models else None,
                         "start_ms": min(r["start_ms"] for r in rs),
                         "end_ms": None if running else max(r["end_ms"] for r in rs),
@@ -172,7 +180,6 @@ class Waterfall:
                         "state": "running" if running else "ok"})
         for t, run in runs:
             run["agent"] = t.handle
-            run.update(self._on())
             if t.prompt:
                 self.owner[t.id] = t
             out.append(run)
@@ -214,30 +221,26 @@ class Waterfall:
             out["name"] = "?"
         return out
 
-    def _on(self) -> dict:
-        return {"machine": self.machine} if self.machine else {}
-
     def _head(self) -> dict:
         return {"title": self.title, "state": "live" if self.running else "done", "totals": self._totals()}
 
     def _view(self) -> dict:
         """The block as it is now, not a copy: for checking."""
         b = {"type": "waterfall", "id": self.bid, **self.head, "spans": self.sent or []}
-        b.update(self._on())
         if self.compact:
             b["compact"] = True
         if self.thread:
             b["thread"] = self.thread
         return b
 
-    def block(self) -> dict:
+    def block(self, spans: bool = True) -> dict:
+        """The block as the apps have it; without its spans, for a `replace` that keeps them."""
         b = {"type": "waterfall", "id": self.bid, **self.head, "started": iso(self.started or 0)}
-        b.update(self._on())
         if self.compact:
             b["compact"] = True
         if self.thread:
             b["thread"] = self.thread
-        b["spans"] = [dict(x) for x in self.sent or []]     # a copy: what's sent mustn't change as it grows
+        b["spans"] = [dict(x) for x in self.sent or []] if spans else []   # a copy: what's sent mustn't change
         return copy.deepcopy(b)
 
     # ------------------------------------------------------------------ sending
@@ -284,7 +287,7 @@ class Waterfall:
             seen.add(s["id"])
 
     def update(self, spawner: dict[str, str]) -> tuple[str, object] | None:
-        """What to send now: ("set", block) for all of it, ("patch", ops), or None when nothing changed."""
+        """What to send now: ("set", block) for all of it, ("edit", edits), or None when nothing changed."""
         if self.sent is None:
             return "set", self.full(spawner)
         spans = self._spans(spawner)
@@ -292,18 +295,17 @@ class Waterfall:
         if (any(s["start_ms"] < self.started for s in spans if s["id"] not in self.index)
                 or len(self.sent) + len(new) > FOLD_AT * 1.3 or self.bytes + 300 * len(new) > MAX_BYTES):
             return "set", self.full(spawner)
-        ops: list[dict] = []
+        put: list[dict] = []
         now = {s["id"]: s for s in spans}
         for sid, n in self.index.items():
             s = now.get(sid)
             if s is None:
                 continue
             was, want = self.sent[n], self._rel(s)
-            for k, v in want.items():
-                if k in ("id", "parent", "kind") or was.get(k) == v:
-                    continue
-                ops.append({"op": "add", "path": f"/b/{self.bid}/spans/{n}/{k}", "value": v})
-                was[k] = v
+            changed = {k: v for k, v in want.items() if k not in ("id", "parent", "kind") and was.get(k) != v}
+            if changed:
+                was.update(changed)
+                put.append(was)
         for s in order(new, set(self.index)):
             s = self._rel(s)
             if s.get("parent") is not None and s["parent"] not in self.index:
@@ -311,20 +313,20 @@ class Waterfall:
             self.index[s["id"]] = len(self.sent)
             self.sent.append(s)
             self.bytes += size(s)
-            ops.append({"op": "add", "path": f"/b/{self.bid}/spans/-", "value": dict(s)})
+            put.append(s)
+        edits = [put_spans(self.bid, put)] if put else []
         head = self._head()
-        for k, v in head.items():
-            if self.head.get(k) != v:
-                ops.append({"op": "add", "path": f"/b/{self.bid}/{k}", "value": copy.deepcopy(v)})
-        self.head = head
-        if not ops:
+        if head != self.head:
+            self.head = head
+            edits.append(keep_spans(self.block(spans=False)))
+        if not edits:
             return None
-        if check(self._view()) is not None or len(ops) > MAX_OPS:
+        if check(self._view()) is not None:
             block = self.full(spawner)
             if (why := check(block)) is not None:
                 block = self._broken(why)
             return "set", block
-        return "patch", ops
+        return "edit", edits
 
     def _broken(self, why: str) -> dict:
         self.sent, self.index = [], {}
@@ -332,7 +334,7 @@ class Waterfall:
         return self.block()
 
     def open(self, sid: str) -> list[dict]:
-        """A span's input and output, as patches: `add`, since a set carries neither."""
+        """A span's input and output, as an edit that puts it again with them: a `set` carries neither."""
         n = self.index.get(sid)
         t = self.owner.get(sid)
         if n is None or t is None or self.bytes > MAX_BYTES:    # full: what more it holds must stay under 1 MiB
@@ -341,14 +343,14 @@ class Waterfall:
             texts = [t.prompt, None]
         else:
             texts = t.texts.get(sid) or [None, None]
-        ops = []
+        changed = False
         for k, v in zip(("input", "output"), texts):
             if isinstance(v, str) and v and self.sent[n].get(k) != v[:SPAN_TEXT]:
                 v = v[:SPAN_TEXT]
                 self.sent[n][k] = v
                 self.bytes += len(v) + 12
-                ops.append({"op": "add", "path": f"/b/{self.bid}/spans/{n}/{k}", "value": v})
-        return ops
+                changed = True
+        return [put_spans(self.bid, [self.sent[n]])] if changed else []
 
 
 def order(spans: list[dict], placed: set[str]) -> list[dict]:

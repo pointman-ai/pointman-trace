@@ -6,7 +6,9 @@
 - `/trace live` opens the `live` pane: every trace running now, then those finished in the last 2 h, each folded
   to its agents' bars; ↩ on one opens its full trace. Below them, the `traces` block lists every thread worked in
   over the last 7 days, a row each, for the apps' navigator to search and filter (EXT-70); `more` pages back.
-- Once a second, while a pane is open, it reads what the run logs gained and sends each pane only its changes.
+- Once a second, while a pane is open, it reads what the run logs gained and sends each pane only its changes, as
+  edits by block name and span id (typed.py makes the protocol's messages of them).
+- A change to its settings starts it again, with the new ones.
 """
 
 from __future__ import annotations
@@ -17,14 +19,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-try:
-    from pointman_extension import Extension, Refused
-except ImportError:                 # a node from before the rename
-    from mb_extension import Extension, Refused  # type: ignore[no-redef]
+import pointman_extension_types as types
+from pointman_extension import Extension, Refused
 
+from . import typed
 from .history import DAYS, History, rows, summarize
 from .runs import Index, Notes, run_logs, thread_of
-from .trace import MAX_OPS, Waterfall
+from .trace import Waterfall
 
 LIVE_FOR = 2 * 3600 * 1000           # ms a finished trace stays in the Live pane
 LIVE_MAX = 12                        # traces in the Live pane at most
@@ -32,6 +33,7 @@ IDLE = 15 * 60                       # seconds with no pane open before the inde
 RECENT = 200                         # rows of the week's list at first, and added by each `more`
 RECENT_MAX = 1000                    # rows at most: well within a pane's 1 MiB
 RECENT_EVERY = 10                    # seconds between sends of the list when only its numbers moved
+TITLE_MAX = 200                      # characters of a pane's title, the protocol's limit
 
 ext = Extension()
 lock = threading.RLock()
@@ -107,10 +109,10 @@ class ThreadView:
         self.shown: list | None = None       # an empty block's content, as sent
 
     def update(self, idx: Index):
-        """("set", blocks), ("patch", ops) or None."""
+        """("set", blocks), ("edit", edits) or None."""
         if self.thread is None:
             return self._empty("Which thread?", "Run /trace thread <number>, or /trace thread in the thread.")
-        self.title = f"Trace · {idx.title(self.thread)}"
+        self.title = f"Trace · {idx.title(self.thread)}"[:TITLE_MAX]
         if not idx.loaded:
             return self._empty("Reading the run logs…", f"Agents' runs on {machine()} in the last "
                                                       f"{idx.hours:g} h.")
@@ -119,7 +121,7 @@ class ThreadView:
             if not turns:
                 return self._empty("No agent work here yet", f"Nothing in the last {idx.hours:g} h on {machine()}: "
                                                              "it shows here as it starts.")
-            self.wf = Waterfall("tr", idx.title(self.thread), machine=ext.node.get("machine") or None)
+            self.wf = Waterfall("tr", idx.title(self.thread))
             self.wf.take(turns)
             return "set", [self.wf.full(idx.spawner)]
         self.wf.title = idx.title(self.thread)
@@ -165,15 +167,15 @@ class LiveView:
     def update(self, idx: Index):
         if not idx.loaded:
             return self._set(empty("Reading the run logs…", f"Agents' runs on {machine()}."))
-        heads, ops = self._heads(idx)
+        heads, edits = self._heads(idx)
         listed = self._list(idx)
         if heads is not None:
             return self._set(heads + [self._block(listed)])
-        ops.extend(self._list_ops(listed))
-        return ("patch", ops) if ops else None
+        edits.extend(self._list_edits(listed))
+        return ("edit", edits) if edits else None
 
     def _heads(self, idx: Index) -> tuple[list | None, list]:
-        """The compact waterfalls: (all of them, to set) or (None, their patches)."""
+        """The compact waterfalls: (all of them, to set) or (None, their edits)."""
         now = int(time.time() * 1000)
         recent: dict[int, list] = {}
         for t in idx.turns():
@@ -183,7 +185,7 @@ class LiveView:
         for n, turns in recent.items():
             wf = self.wfs.get(n)
             if wf is None:
-                wf = self.wfs[n] = Waterfall(f"t{n}", idx.title(n), thread=n, compact=True, machine=ext.node.get("machine") or None)
+                wf = self.wfs[n] = Waterfall(f"t{n}", idx.title(n), thread=n, compact=True)
             wf.title = idx.title(n)
             wf.take(turns)
         for n, wf in list(self.wfs.items()):
@@ -201,17 +203,15 @@ class LiveView:
         if order != self.order or self.listed is None:
             self.order = order
             return [w.full(idx.spawner) for w in shown], []
-        ops: list[dict] = []
+        edits: list[dict] = []
         for w in shown:
             got = w.update(idx.spawner)
             if got is None:
                 continue
             if got[0] == "set":
                 return [x.full(idx.spawner) if x is not w else got[1] for x in shown], []
-            ops.extend(got[1])
-        if len(ops) > MAX_OPS - 3:         # more than the node takes in one patch, with the list's: all of it again
-            return [w.full(idx.spawner) for w in shown], []
-        return None, ops
+            edits.extend(got[1])
+        return None, edits
 
     # ------------------------------------------------------------------ the week's list (EXT-70)
 
@@ -241,8 +241,8 @@ class LiveView:
         self.listed, self.listed_at = listed, time.time()
         return {"type": "traces", "id": LIST, "days": DAYS, **listed}
 
-    def _list_ops(self, listed: dict, now: bool = False) -> list[dict]:
-        """The list's changes as `replace`s: at once when a row comes, goes, moves or changes state, or `more`
+    def _list_edits(self, listed: dict, now: bool = False) -> list[dict]:
+        """The list, as a `replace` of its block: at once when a row comes, goes, moves or changes state, or `more`
         or `loading` does; numbers alone at most every RECENT_EVERY seconds."""
         was = self.listed or {}
         if listed == was:
@@ -252,9 +252,7 @@ class LiveView:
         if (not now and same and listed["more"] == was.get("more") and listed["loading"] == was.get("loading")
                 and time.time() - self.listed_at < RECENT_EVERY):
             return []
-        ops = [{"op": "replace", "path": f"/b/{LIST}/{k}", "value": v} for k, v in listed.items() if was.get(k) != v]
-        self._block(listed)
-        return ops
+        return [{"replace": {"block": self._block(listed)}}]
 
     def more(self, before) -> list[dict]:
         """`more`: every row back to `before` (an ISO time, or the oldest row shown), and up to RECENT finished before
@@ -268,7 +266,7 @@ class LiveView:
         older = [r["_end"] for r in self.all if r["state"] == "done" and r["_end"] < at][:RECENT]
         floor = min(older) if older else at
         self.floor = floor if self.floor is None else min(self.floor, floor)
-        return self._list_ops(self._list(index()), now=True)
+        return self._list_edits(self._list(index()), now=True)
 
     def _set(self, blocks: list):
         if blocks == self.shown:
@@ -288,23 +286,23 @@ def send(pane, got) -> None:
         return
     kind, value = got
     if kind == "set":
-        pane.set(value)
+        pane.set(typed.blocks(value))
     elif value:
-        pane.patch(value)
+        pane.edit(typed.edits(value))
 
 
-def opened(pane, view) -> dict:
+def opened(pane, view) -> types.PaneOpenResponse:
     """A pane's first content, and how it answers inputs and closes."""
     @pane.on_input
-    def tapped(event):
-        kind = event.get("kind")
-        listed = isinstance(view, LiveView) and event.get("block") in (None, LIST)
+    def tapped(event: types.PaneInput):
+        kind, fields = event.kind, event.fields or {}
+        listed = isinstance(view, LiveView) and fields.get("block") in (None, LIST)
         if kind != "open" and not (kind == "more" and listed):
             raise Refused("a trace only opens its spans, and the Live pane's list pages back with `more`")
         with lock:
-            ops = view.open(event.get("block"), event.get("span")) if kind == "open" else view.more(event.get("before"))
-            if ops:
-                pane.patch(ops)
+            edits = view.open(fields.get("block"), fields.get("span")) if kind == "open" else view.more(fields.get("before"))
+            if edits:
+                pane.edit(typed.edits(edits))
 
     @pane.on_close
     def closed(_reason):
@@ -326,13 +324,12 @@ def opened(pane, view) -> dict:
         view.shown = blocks
     else:
         blocks = got[1]
-    return {"title": view.title, "blocks": blocks}
+    return types.PaneOpenResponse(title=view.title, content=types.PaneContent(blocks=typed.blocks(blocks)))
 
 
 @ext.pane("trace")
 def open_trace(pane):
-    thread = thread_of(pane.target.get("thread")) or thread_of(pane.context.get("thread")) \
-        or thread_of(pane.context.get("thread_id"))
+    thread = thread_of(pane.target.get("thread")) or thread_of(typed.thread_number(pane.context.thread))
     return opened(pane, ThreadView(thread))
 
 
@@ -372,7 +369,10 @@ def tick() -> None:
         if listing:
             history().start()                # newly finished runs, every AGAIN seconds
         now = time.time()
+        ready = {p.id for p in ext.panes()}      # their open is answered: the apps have their first content
         for pane, view in list(views.values()):
+            if pane.id not in ready:
+                continue
             seen = (idx.version, history().version if isinstance(view, LiveView) else None)
             if view.seen == seen and now - view.at < 30:   # nothing new: only the Live pane's 2 h moves
                 continue
@@ -381,19 +381,13 @@ def tick() -> None:
             got = view.update(idx)
             if view.title != title:
                 pane.set_title(view.title)
-            send(pane, got)
+            try:
+                send(pane, got)
+            except ValueError as why:        # its edits wouldn't apply to what the apps have: all of it, next tick
+                ext.log(f"trace: {pane.id}: {why}")
+                view.reset()
+                view.seen = None
         ext.event("trace.status", {"folder": str(idx.folder), "runs": len(idx.runs), "panes": len(views)})
-
-
-@ext.on_settings
-def settings_changed(_settings) -> None:
-    with lock:
-        state["index"] = None
-        state["history"] = None
-        state["notes"] = None
-        for pane, view in views.values():
-            view.reset()
-            view.seen = None
 
 
 def note() -> None:

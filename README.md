@@ -55,6 +55,6 @@ The Live pane's list has a row for each thread agents worked in on this machine 
 PYTHONPATH=.:tests python3 -m unittest discover -s tests
 ```
 
-The end-to-end tests run the extension's process through the node's Python SDK. Point `POINTMAN_EXTENSIONS_SDK` at the SDK's folder to run them too. Without it, they're skipped.
+The end-to-end tests run the extension's process on the SDK's stand-in node, which speaks the node's typed protocol and keeps each pane as an app does. Point `POINTMAN_EXTENSIONS_SDK` at the SDK's folder (one with `pointman_extension_types.py`) to run them too. Without it, they're skipped.
 
 MIT licensed.
