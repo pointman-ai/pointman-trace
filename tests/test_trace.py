@@ -11,23 +11,30 @@ from pointman_trace.trace import Waterfall, check, order
 from helpers import T0, Log, text, tool
 
 
-def apply(block: dict, ops: list[dict]) -> dict:
-    """The patches as the node applies them to what it keeps (`/b/<id>/…` paths, add only)."""
+def apply(block: dict, edits: list[dict]) -> dict:
+    """The edits as the node applies them to what it keeps: spans put by id (replaced where they are, or added at the
+    end), and the block's own fields replaced with its spans kept."""
     b = copy.deepcopy(block)
-    for op in ops:
-        assert op["op"] == "add", op
-        parts = op["path"].split("/")[1:]
-        assert parts[:2] == ["b", b["id"]], op
-        target = b
-        for p in parts[2:-1]:
-            target = target[int(p)] if isinstance(target, list) else target[p]
-        last = parts[-1]
-        if isinstance(target, list):
-            assert last == "-", op
-            target.append(op["value"])
+    for e in edits:
+        if "put_items" in e:
+            assert e["put_items"]["block"] == b["id"], e
+            at = {s["id"]: n for n, s in enumerate(b["spans"])}
+            for s in e["put_items"]["items"]:
+                if s["id"] in at:
+                    b["spans"][at[s["id"]]] = copy.deepcopy(s)
+                else:
+                    at[s["id"]] = len(b["spans"])
+                    b["spans"].append(copy.deepcopy(s))
         else:
-            target[last] = op["value"]
+            r = e["replace"]
+            assert r["keep_items"] and r["block"]["id"] == b["id"], e
+            b = {**copy.deepcopy(r["block"]), "spans": b["spans"]}
     return b
+
+
+def put(edits: list[dict]) -> list[dict]:
+    """The spans the edits put."""
+    return [s for e in edits if "put_items" in e for s in e["put_items"]["items"]]
 
 
 class WaterfallTests(unittest.TestCase):
@@ -47,7 +54,7 @@ class WaterfallTests(unittest.TestCase):
         self.idx.refresh()
         return [t for t in self.idx.turns() if thread in t.threads]
 
-    def test_it_grows_by_appends_and_field_sets(self):
+    def test_it_grows_by_appends_and_spans_put_again(self):
         a = Log(self.dir, 1, "scene", thread=500, cost_before=0.0)
         w = self.wf()
         w.take(self.turns())
@@ -61,21 +68,22 @@ class WaterfallTests(unittest.TestCase):
         a.say("q1", tool("t1", "mcp__pointman__post_message", thread_id=500, text="hi"))
         a.results(("t1", "posted", False))
         w.take(self.turns())
-        kind, ops = w.update({})
-        self.assertEqual(kind, "patch")
-        block = apply(block, ops)
+        kind, edits = w.update({})
+        self.assertEqual(kind, "edit")
+        was = [s["id"] for s in block["spans"]]
+        block = apply(block, edits)
         self.assertIsNone(check(block))
         self.assertEqual(block, w.block())
         self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run", "llm", "tool", "llm"])
-        appended = [op for op in ops if op["path"].endswith("/spans/-")]
-        self.assertEqual(len(appended), 2)
+        self.assertEqual([s["id"] for s in put(edits) if s["id"] not in was], ["t:t1", "l:1.2"])   # appended
+        self.assertIn("l:1.1", [s["id"] for s in put(edits)])     # the model call that ended, sent again whole
 
         a.say("q2", text("done"))
         a.result(1.5, took=5000)
         a.end()
         w.take(self.turns())
-        kind, ops = w.update({})
-        block = apply(block, ops)
+        kind, edits = w.update({})
+        block = apply(block, edits)
         self.assertEqual(block, w.block())
         self.assertEqual(block["state"], "done")
         self.assertEqual(block["totals"]["cost_usd"], 1.5)
@@ -90,8 +98,8 @@ class WaterfallTests(unittest.TestCase):
         b = Log(self.dir, 2, "helper", thread=500, start=T0 + 5000)
         b.say("x", text("hello"))
         w.take(self.turns())
-        kind, ops = w.update({"helper": "scene"})
-        block = apply(block, ops)
+        kind, edits = w.update({"helper": "scene"})
+        block = apply(block, edits)
         self.assertIsNone(check(block))
         ids = [s["id"] for s in block["spans"]]
         self.assertLess(ids.index("a:helper"), ids.index("r:2"))
@@ -118,9 +126,9 @@ class WaterfallTests(unittest.TestCase):
         w.take(self.turns())
         block = w.full({})
         self.assertFalse(any("input" in s or "output" in s for s in block["spans"]))
-        ops = w.open("t:t1")
-        self.assertEqual([op["path"].rsplit("/", 1)[1] for op in ops], ["input", "output"])
-        block = apply(block, ops)
+        edits = w.open("t:t1")
+        self.assertEqual([(s["id"], "input" in s, "output" in s) for s in put(edits)], [("t:t1", True, True)])
+        block = apply(block, edits)
         span = next(s for s in block["spans"] if s["id"] == "t:t1")
         self.assertEqual(span["output"], "file1 file2")
         self.assertIn("ls -la", span["input"])
@@ -139,14 +147,12 @@ class WaterfallTests(unittest.TestCase):
         self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run"])
         self.assertEqual(block["totals"]["tool_calls"], 1)
 
-    def test_each_trace_and_its_agents_and_runs_say_their_machine(self):
+    def test_each_trace_says_its_machine(self):
         a = Log(self.dir, 1, "scene", thread=500)
         a.say("q1", tool("t1", "Bash", command="ls"))
         w = Waterfall("t500", "A thread", thread=500, compact=True, machine="nixos")
         w.take(self.turns())
-        block = w.full({})
-        self.assertEqual(block["machine"], "nixos")
-        self.assertEqual([(s["kind"], s.get("machine")) for s in block["spans"]], [("agent", "nixos"), ("run", "nixos")])
+        self.assertEqual(w.full({})["machine"], "nixos")
         self.assertEqual(w.block()["machine"], "nixos")
         bare = Waterfall("t500", "A thread", thread=500, compact=True)
         bare.take(self.turns())
@@ -201,22 +207,22 @@ class WaterfallTests(unittest.TestCase):
         self.assertAlmostEqual(sum(costs), 2.0, places=2)   # shared by model calls: 1 here, 3 there
         self.assertAlmostEqual(costs[0], 0.5, places=2)
 
-    def test_a_burst_past_the_nodes_patch_limit_goes_whole(self):
+    def test_a_burst_goes_as_one_put_of_its_spans(self):
         a = Log(self.dir, 1, "scene", thread=500)
         w = self.wf()
         w.take(self.turns())
-        w.full({})
+        block = w.full({})
         for i in range(30):
             a.say(f"q{i}", tool(f"t{i}", "Bash", command="true"))
             a.results((f"t{i}", "", False))
         w.take(self.turns())
-        with mock.patch.object(trace, "MAX_OPS", 20):
-            kind, block = w.update({})
-        self.assertEqual(kind, "set")
+        kind, edits = w.update({})
+        self.assertEqual((kind, [next(iter(e)) for e in edits]), ("edit", ["put_items", "replace"]))
+        block = apply(block, edits)
         self.assertIsNone(check(block))
+        self.assertEqual(block, w.block())
         self.assertEqual(len(block["spans"]), 3 + 60)
-        kind, ops = w.update({}) or (None, [])
-        self.assertIsNone(kind)                           # nothing new since: nothing sent
+        self.assertIsNone(w.update({}))                   # nothing new since: nothing sent
 
     def test_check_matches_the_nodes_rules(self):
         good = {"type": "waterfall", "id": "tr", "title": "t", "state": "live", "totals": {"ms": 1, "cost_usd": None},

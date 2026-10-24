@@ -21,6 +21,12 @@ SDK = os.environ.get("POINTMAN_EXTENSIONS_SDK")
 HOUR = 3_600_000
 
 
+def listed(edits: list[dict]) -> dict | None:
+    """The Live pane's list, if the edits replace it."""
+    return next((e["replace"]["block"] for e in edits if "replace" in e and e["replace"]["block"]["id"] == "recent"),
+                None)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -134,7 +140,7 @@ class Rows(Base):
         self.assertFalse(h.loading)
 
 
-@unittest.skipUnless(SDK and Path(SDK, "pointman_extension.py").is_file(), "needs the node's Python SDK")
+@unittest.skipUnless(SDK and Path(SDK, "pointman_extension_types.py").is_file(), "needs the node's typed Python SDK")
 class Paging(Base):
     def live(self):
         """The extension's module, as the node starts it (its manifest beside its __main__)."""
@@ -159,16 +165,15 @@ class Paging(Base):
         m, idx = self.live()
         view = m.LiveView()
         kind, blocks = view.update(idx)
-        listed = blocks[-1]
-        self.assertEqual((kind, listed["type"], listed["more"]), ("set", "traces", True))
-        self.assertEqual([r["thread"] for r in listed["items"]], [505, 504])
-        ops = view.more(listed["items"][-1]["end"])
-        self.assertEqual({op["path"] for op in ops}, {"/b/recent/items"})
-        self.assertEqual([r["thread"] for r in ops[0]["value"]], [505, 504, 503, 502])
-        ops = view.more(None)                                  # from the oldest shown
-        got = {op["path"]: op["value"] for op in ops}
-        self.assertEqual(([r["thread"] for r in got["/b/recent/items"]], got["/b/recent/more"]),
-                         ([505, 504, 503, 502, 501], False))
+        first = blocks[-1]
+        self.assertEqual((kind, first["type"], first["more"]), ("set", "traces", True))
+        self.assertEqual([r["thread"] for r in first["items"]], [505, 504])
+        edits = view.more(first["items"][-1]["end"])
+        self.assertEqual(len(edits), 1)
+        got = listed(edits)
+        self.assertEqual(([r["thread"] for r in got["items"]], got["more"]), ([505, 504, 503, 502], True))
+        got = listed(view.more(None))                          # from the oldest shown
+        self.assertEqual(([r["thread"] for r in got["items"]], got["more"]), ([505, 504, 503, 502, 501], False))
         self.assertEqual(view.more(None), [])                  # nothing older
         self.assertIsNone(view.update(idx))                    # and nothing new
 
@@ -180,10 +185,8 @@ class Paging(Base):
         m, idx = self.live()
         view = m.LiveView()
         view.update(idx)
-        ops = view.more("2026-01-01T00:00:00.000Z")
-        got = {op["path"]: op["value"] for op in ops}
-        self.assertEqual(([r["thread"] for r in got["/b/recent/items"]], got["/b/recent/more"]),
-                         ([505, 504, 503, 502, 501], False))
+        got = listed(view.more("2026-01-01T00:00:00.000Z"))
+        self.assertEqual(([r["thread"] for r in got["items"]], got["more"]), ([505, 504, 503, 502, 501], False))
 
     def test_numbers_alone_wait_a_few_seconds(self):
         self.run_log(1, "scene", 501, 0, 0.1)
@@ -194,10 +197,10 @@ class Paging(Base):
         going.say("q2.b", tool("t2.b", "Bash", command="ls"))
         idx.refresh(time.time())
         got = view.update(idx)
-        self.assertFalse(got and any(op["path"].startswith("/b/recent") for op in got[1]))
+        self.assertFalse(got and listed(got[1]))
         view.listed_at -= m.RECENT_EVERY
-        got = view.update(idx)
-        self.assertIn("/b/recent/items", [op["path"] for op in got[1]])
+        kind, edits = view.update(idx)
+        self.assertEqual([r["thread"] for r in listed(edits)["items"]], [502, 501])
 
 
 if __name__ == "__main__":
