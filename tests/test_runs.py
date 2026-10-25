@@ -66,6 +66,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual(turn.texts[nxt["id"]][1], "Done.")
         self.assertEqual(turn.span()["state"], "ok")
 
+    def test_the_tools_names_from_the_switch_read_as_the_old_ones_did(self):
+        # create_post and get_thread name their thread as `thr_N` (or a number); a post's words are its blocks. Logs
+        # from before the switch keep post_message and read_thread, which the test above reads.
+        log = Log(self.dir, 9, "scene", thread=17979)
+        run = Run(9, log.path)
+        log.say("req1", tool("tu1", "mcp__pointman__get_thread", thread="thr_17979"))
+        log.results(("tu1", "the thread", False))
+        log.say("req2", tool("tu2", "mcp__pointman__create_post", thread="thr_18000",
+                             blocks=["/spawn helper claude\nDo the thing", {"text": {"markdown": "/spawn other claude"}}]))
+        log.results(("tu2", "posted", False))
+        log.say("req3", text("All done."))
+        log.result(1.0, took=5000)
+        run.look()
+        turn, = run.turns
+        read = next(s for s in turn.spans if s["name"] == "get_thread")
+        self.assertEqual((read["detail"], read["service"]), ("17979", "Pointman"))
+        self.assertEqual(turn.threads, {17979, 18000})
+        self.assertEqual(run.spawns, ["helper", "other"])
+
     def test_a_sub_agent_nests_under_its_task(self):
         log = Log(self.dir, 8)
         run = Run(8, log.path)

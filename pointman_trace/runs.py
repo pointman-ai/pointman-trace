@@ -17,7 +17,7 @@ A model call starts when its context hands back to the model (the turn's start, 
 results), and runs until its next message.
 
 **Which thread a call is for:** the one the turn is working in when it starts. A turn starts in the thread that
-woke it; a call that names another thread (`thread_id`) moves it there, along with the model call that made it.
+woke it; a call that names another thread (`thread`, or `thread_id` before the switch) moves it there, along with the model call that made it.
 A resident session's later wakes start in none, and their first calls wait for the first thread they name.
 So a session that works on several threads in one turn shows each thread's part in that thread's trace.
 """
@@ -113,7 +113,8 @@ def friendly(name: str, inp) -> tuple[str, str]:
     """A tool call's row name and its dim detail."""
     inp = inp if isinstance(inp, dict) else {}
     if name.startswith("mcp__"):
-        what = inp.get("thread_id") or inp.get("message_id") or inp.get("ref") or inp.get("query") or ""
+        what = (thread_of(called_thread(inp)) or inp.get("message_id") or inp.get("post") or inp.get("ref")
+                or inp.get("task") or inp.get("query") or "")
         return name.split("__")[-1], str(what)
     if name == "Bash":
         return "Bash", inp.get("description") or inp.get("command") or ""
@@ -138,12 +139,33 @@ def text_of(content) -> str:
 
 
 def thread_of(value) -> int | None:
+    """A thread's number, from a number, its digits or its id (`thr_5918`)."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value if value > 0 else None
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
+    if isinstance(value, str):
+        value = value.removeprefix("thr_")
+        if value.isdigit():
+            return int(value) or None
+    return None
+
+
+def called_thread(inp: dict):
+    """The thread a Pointman tool call names: `thread` from the switch (create_post, get_thread), `thread_id` in
+    the run logs from before it (post_message, read_thread)."""
+    return inp.get("thread") if inp.get("thread") is not None else inp.get("thread_id")
+
+
+def posted_words(raw: str, inp: dict) -> str | None:
+    """What a post call says: create_post's and create_thread's text blocks, or post_message's text in the run logs
+    from before the switch."""
+    if raw.endswith("post_message") and isinstance(inp.get("text"), str):
+        return inp["text"]
+    if raw.endswith(("create_post", "create_thread")) and isinstance(inp.get("blocks"), list):
+        words = [b if isinstance(b, str) else ((b.get("text") or {}).get("markdown") or "")
+                 for b in inp["blocks"] if isinstance(b, (str, dict))]
+        return "\n".join(w for w in words if isinstance(w, str) and w)
     return None
 
 
@@ -469,7 +491,7 @@ class Run:
             if b.get("type") == "text" and b.get("text"):
                 said.append(b["text"])
             elif b.get("type") == "tool_use" and isinstance(b.get("id"), str):
-                n = thread_of((b.get("input") or {}).get("thread_id")) if isinstance(b.get("input"), dict) else None
+                n = thread_of(called_thread(b["input"])) if isinstance(b.get("input"), dict) else None
                 if n is not None and n != self.cur and c is None:
                     self._move(llm["_turn"], n, llm)
                 self._tool(llm["_turn"], c, cx, b, t)
@@ -494,8 +516,9 @@ class Run:
         self.uses[b["id"]] = (turn, span, c)
         cx["open"].add(b["id"])
         if isinstance(inp, dict):
-            if raw.endswith("post_message") and isinstance(inp.get("text"), str):
-                self.spawns.extend(SPAWN.findall(inp["text"]))
+            words = posted_words(raw, inp)
+            if words:
+                self.spawns.extend(SPAWN.findall(words))
 
     def _user(self, e: dict, t: int) -> None:
         turn = self._turn(t)
