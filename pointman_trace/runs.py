@@ -59,9 +59,18 @@ SECRET = [        # (pattern, what it becomes): each a credential's shape (loupe
     (re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"), "[hidden]"),       # a JWT
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "[hidden]"),                                # an AWS access key
     (re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|[rsp]k_(?:live|test)_[A-Za-z0-9]{8,}|whsec_[A-Za-z0-9]{8,}"
-                r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abpr]-[A-Za-z0-9-]{10,})"), "[hidden]"),
+                r"|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9-]{10,}"
+                r"|glsa_[A-Za-z0-9_]{16,}|glc_[A-Za-z0-9_+/=-]{16,}|ss_[A-Za-z0-9_-]{16,}"
+                # Linear, Hugging Face, npm, ElevenLabs and Google keys, as the node's masker has them (EXT-99,
+                # boardsmith's list in 23172 [23557])
+                r"|lin_api_[A-Za-z0-9]{32,}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36,}|sk_[0-9a-f]{40,}"
+                r"|AIza[A-Za-z0-9_-]{35,})"), "[hidden]"),
 ]
+# an opaque key, as the node's masker has it: 32+ letters and digits after anything that isn't one (so after a `_`
+# too), mixing upper case, lower case and digits. Git SHAs and sha256s are lower-case hex, so they stay.
+OPAQUE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{32,}")
 LONG = re.compile(r"\b[A-Za-z0-9+_-]{40,}={0,2}")    # a key or token: long, and full of digits (a path's words aren't)
+HEX = re.compile(r"[0-9a-f]+")                       # a SHA: never one of LONG's
 SERVICES = {"Bash": "shell", "Read": "files", "Edit": "files", "Write": "files", "Glob": "files", "Grep": "files",
             "NotebookEdit": "files", "WebFetch": "web", "WebSearch": "web", "TodoWrite": "notes",
             "ToolSearch": "tools", "Skill": "skills", "Task": "agents", "Agent": "agents"}
@@ -72,6 +81,10 @@ def run_logs(home: Path | None = None) -> Path:
     home = home or Path.home()
     mac = home / "Library/Logs/message-board"
     return mac / "runs" if mac.is_dir() else home / ".local/state/message-board/runs"
+
+
+def mixed(token: str) -> bool:
+    return any(c.isupper() for c in token) and any(c.islower() for c in token) and any(c.isdigit() for c in token)
 
 
 def clean(text, n: int = CUT) -> str | None:
@@ -87,7 +100,9 @@ def clean(text, n: int = CUT) -> str | None:
     text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
     for pattern, hidden in SECRET:
         text = pattern.sub(hidden, text)
-    text = LONG.sub(lambda m: "[hidden]" if sum(c.isdigit() for c in m.group(0)) >= 6 else m.group(0), text)
+    text = OPAQUE.sub(lambda m: "[hidden]" if mixed(m.group(0)) else m.group(0), text)
+    text = LONG.sub(lambda m: m.group(0) if HEX.fullmatch(m.group(0)) or sum(c.isdigit() for c in m.group(0)) < 6
+                    else "[hidden]", text)
     text = " ".join(text.split())
     return text if len(text) <= n else text[: n - 1] + "…"
 

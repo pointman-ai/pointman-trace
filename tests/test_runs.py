@@ -200,6 +200,33 @@ class CleanTests(unittest.TestCase):
             self.assertEqual(clean(f"x {key} y"), "x [hidden] y", key)
         self.hidden("STRIPE=sk_live_51HxQabcdefghijklmnop", "51HxQ")
 
+    def test_keys_with_few_digits_or_none(self):
+        """The node's shapes (EXT-99, 23172 [23557]), on made-up values the digit count never caught: an hf_ token
+        is 37 characters, and the others can hold fewer than 6 digits."""
+        for key in ("lin_api_" + "AbCdEfGhJkLmNpQrStUvWxYzAbCdEfGhJkLmNpQr",
+                    "hf_" + "AbCdEfGhJkLmNpQrStUvWxYzAbCdEfGh",
+                    "npm_" + "AbCdEfGhJkLmNpQrStUvWxYzAbCdEfGhJkLm",
+                    "sk_" + "abcdef" * 8,
+                    "AIza" + "SyAbCdEfGhJkLmNpQrStUvWxYz_AbCd-Efg",
+                    "glsa_" + "AbCdEfGhJkLmNpQrStUv", "xoxs-" + "1-AbCdEfGhJk"):
+            self.assertEqual(clean(f"x {key} y"), "x [hidden] y", key)
+            self.assertEqual(clean(f"curl -d '{key}'"), "curl -d '[hidden]'", key)
+
+    def test_opaque_keys_after_any_boundary(self):
+        opaque = "Q7vXk2LmP9wRtY4nB8sJ3hF6gD1cZ5aE"         # 32 mixed letters and digits, with no name beside it
+        for raw in (f"key {opaque}", f"MY_{opaque}", f"x-{opaque}", f"/{opaque}/"):
+            self.assertNotIn(opaque, clean(raw), raw)
+        self.assertEqual(clean(f"MY_{opaque} ok"), "MY_[hidden] ok")
+
+    def test_shas_stay(self):
+        """git SHAs and sha256s are lower-case hex, so neither the opaque shape nor the long-token one hides them,
+        however many digits they hold: a run's commits and checksums stay readable."""
+        sha1 = "89eda7c0123456789abcdef0123456789abcdef0"
+        sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        for s in (f"git show {sha1}", f"sha256:{sha256}", f"{sha1}..{sha1}", sha256,
+                  f"https://github.com/pointman-ai/pointman-trace/commit/{sha1}"):
+            self.assertEqual(clean(s), s)
+
     def test_names_that_contain_key_token_secret_or_pass(self):
         self.assertEqual(clean("DB_PASSWORD_PROD=hunter2 AWS_SECRET_ACCESS_KEY_2=abc/def"),
                          "DB_PASSWORD_PROD=[hidden] AWS_SECRET_ACCESS_KEY_2=[hidden]")
