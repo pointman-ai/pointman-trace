@@ -1,7 +1,7 @@
 """The trace extension's process: `python -m pointman_trace`, started and spoken to by the node.
 
 - `/trace thread [n]` opens the `trace` pane: one thread's agent work on this machine as a live waterfall (the
-  thread it's run in, without n). An agent opens it with open_pane(extension="trace", pane="trace",
+  thread it's run in, without n). An agent opens it with open_pane(extension="trace", open="trace",
   target={"thread": n}).
 - `/trace live` opens the `live` pane: every trace running now, then those finished in the last 2 h, each folded
   to its agents' bars; ↩ on one opens its full trace. Below them, the `traces` block lists every thread worked in

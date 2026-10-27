@@ -9,7 +9,7 @@ Two views:
 
 Open a span to see its input and output (the first 300 characters of each).
 
-Agents open the same panes with `open_pane(extension="trace", pane="trace", target={"thread": 17979})`, or `pane="live"`.
+Agents open the same panes with `open_pane(extension="trace", open="trace", target={"thread": 17979})`, or `open="live"`.
 
 ## What it reads
 
