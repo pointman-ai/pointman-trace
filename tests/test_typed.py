@@ -75,10 +75,10 @@ class TypedTests(unittest.TestCase):
         wf, listed, empty = (b.to_json() for b in typed.blocks(blocks))
         self.assertEqual((wf["name"], wf["view"]["waterfall"]["thread"], wf["view"]["waterfall"]["compact"],
                           [s["kind"] for s in wf["view"]["waterfall"]["spans"]]),
-                         ("t500", {"value": "thr_500"}, True, ["KIND_AGENT", "KIND_RUN"]))
+                         ("t500", {"id": "thr_500"}, True, ["KIND_AGENT", "KIND_RUN"]))
         item, = listed["view"]["traces"]["items"]
         self.assertEqual((item["thread"], item["state"], item["agents"], item["machines"], "end" in item),
-                         ({"value": "thr_500"}, "STATE_LIVE", [{"handle": "scene"}], [{"value": "mac-m4"}], False))
+                         ({"id": "thr_500"}, "STATE_LIVE", [{"name": "scene"}], [{"name": "mac-m4"}], False))
         self.assertEqual(empty, {"name": "none", "empty": {"title": "Nothing running"}})
 
 

@@ -54,10 +54,10 @@ class ExtensionTests(unittest.TestCase):
         view.wait(lambda v: len(self.spans(v, "tr")) == 4)    # the logs weren't read yet: the next tick sets it
         wf = view.block("tr").view.waterfall
         self.assertEqual((wf.title, wf.state), ("A thread", types.WaterfallView.State.STATE_LIVE))
-        self.assertEqual(wf.machine, types.MachineId(value="mac-test"))     # the apps merge every machine's by it
+        self.assertEqual(wf.machine, types.MachineRef(name="mac-test"))     # the apps merge every machine's by it
         self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN, Span.Kind.KIND_LLM,
                                                       Span.Kind.KIND_TOOL])
-        self.assertEqual(wf.spans[3].agent, types.MemberRef(handle="scene"))
+        self.assertEqual(wf.spans[3].agent, types.MemberRef(name="scene"))
 
         sets = sum(m == "pane.set" for m, _ in view.frames)
         log.results(("t1", "hi", False))
@@ -80,7 +80,7 @@ class ExtensionTests(unittest.TestCase):
 
     def test_a_pane_opened_from_a_thread_shows_that_thread(self):
         Log(self.dir, 1, "scene", thread=500).say("q1", text("thinking"))
-        view = self.node.open_pane("trace", context=types.PaneContext(thread=types.ThreadId(value="thr_500")))
+        view = self.node.open_pane("trace", context=types.PaneContext(thread=types.ThreadRef(id="thr_500")))
         view.wait(lambda v: v.block("tr") is not None)
         self.assertEqual((view.title, view.block("tr").view.waterfall.title), ("Trace · A thread", "A thread"))
 
@@ -91,7 +91,7 @@ class ExtensionTests(unittest.TestCase):
         view.wait(lambda v: v.block("t500") is not None and v.block("recent") is not None
                   and v.block("recent").view.traces.items)
         wf = view.block("t500").view.waterfall
-        self.assertEqual((wf.compact, wf.thread.value, wf.state), (True, "thr_500",
+        self.assertEqual((wf.compact, wf.thread.id, wf.state), (True, "thr_500",
                                                                    types.WaterfallView.State.STATE_LIVE))
         self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN])
         # the week's list after it (EXT-70): a row per thread, this one running
@@ -99,9 +99,9 @@ class ExtensionTests(unittest.TestCase):
         listed = view.block("recent").view.traces
         self.assertEqual((listed.days, listed.more), (7, False))
         row, = listed.items
-        self.assertEqual((row.thread.value, row.title, row.state, row.end, row.agents, row.machines),
+        self.assertEqual((row.thread.id, row.title, row.state, row.end, row.agents, row.machines),
                          ("thr_500", "A thread", types.WaterfallView.State.STATE_LIVE, None,
-                          [types.MemberRef(handle="scene")], [types.MachineId(value="mac-test")]))
+                          [types.MemberRef(name="scene")], [types.MachineRef(name="mac-test")]))
         # nothing older to page back to; anything but open and more is refused
         view.input("more", block="recent", before=row.start.isoformat())
         with self.assertRaises(InputRefused) as refused:

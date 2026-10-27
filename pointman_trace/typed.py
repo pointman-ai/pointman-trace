@@ -3,8 +3,8 @@ waterfall block" and "The traces block"). trace.py and the panes make them as di
 tested without the SDK; these turn them into the messages the SDK sends, as they go.
 
 - A block's `id` is its `name`, unique in the pane: edits and inputs say it.
-- A thread is a ThreadId (`thr_17979`), an agent a MemberRef by its handle, a machine a MachineId by its name (a
-  waterfall's says where its runs were, so a pane on every machine merges them by it).
+- A thread is a ThreadRef by its id (`thr_17979`), an agent a MemberRef by its handle (`name`), a machine a MachineRef
+  by its hostname (`name`; a waterfall's says where its runs were, so a pane on every machine merges them by it).
 - An edit is a `put_items` of a waterfall's spans (the only items Trace puts), or a `replace` of a block, keeping its
   items or not.
 """
@@ -21,13 +21,13 @@ Span = WaterfallView.Span
 TOTALS = tuple(f.name for f in dataclasses.fields(WaterfallView.Totals))
 
 
-def thread_id(n: int) -> types.ThreadId:
-    return types.ThreadId(value=f"thr_{n}")
+def thread_ref(n: int) -> types.ThreadRef:
+    return types.ThreadRef(id=f"thr_{n}")
 
 
-def thread_number(tid: types.ThreadId | None) -> str | None:
-    """A ThreadId's number, as text (`thr_17979` → "17979"), for runs.thread_of."""
-    return tid.value.removeprefix("thr_") if tid is not None and tid.value else None
+def thread_number(ref: types.ThreadRef | None) -> str | None:
+    """A ThreadRef's number, as text (`thr_17979` → "17979"), for runs.thread_of."""
+    return ref.id.removeprefix("thr_") if ref is not None and ref.id else None
 
 
 def when(iso: str | None) -> datetime | None:
@@ -42,7 +42,7 @@ def totals(t: dict | None) -> WaterfallView.Totals | None:
 
 def span(s: dict) -> Span:
     return Span(id=s["id"], parent=s.get("parent"), kind=Span.Kind[f"KIND_{s['kind'].upper()}"], name=s["name"],
-                detail=s.get("detail"), agent=types.MemberRef(handle=s["agent"]) if s.get("agent") else None,
+                detail=s.get("detail"), agent=types.MemberRef(name=s["agent"]) if s.get("agent") else None,
                 model=s.get("model"), service=s.get("service"), start_ms=s["start_ms"], end_ms=s.get("end_ms"),
                 cost_usd=s.get("cost_usd"), tokens_in=s.get("tokens_in"), tokens_out=s.get("tokens_out"),
                 tokens_cached=s.get("tokens_cached"), state=Span.State[f"STATE_{s['state'].upper()}"],
@@ -53,15 +53,15 @@ def waterfall(b: dict) -> Block:
     return Block(name=b["id"], view=View(waterfall=WaterfallView(
         title=b["title"], state=WaterfallView.State[f"STATE_{b['state'].upper()}"], started=when(b.get("started")),
         totals=totals(b.get("totals")), compact=bool(b.get("compact")),
-        thread=thread_id(b["thread"]) if b.get("thread") else None, spans=[span(s) for s in b.get("spans") or []],
-        machine=types.MachineId(value=b["machine"]) if b.get("machine") else None)))
+        thread=thread_ref(b["thread"]) if b.get("thread") else None, spans=[span(s) for s in b.get("spans") or []],
+        machine=types.MachineRef(name=b["machine"]) if b.get("machine") else None)))
 
 
 def row(r: dict) -> TracesView.Row:
-    return TracesView.Row(id=r["id"], thread=thread_id(r["thread"]), title=r["title"],
+    return TracesView.Row(id=r["id"], thread=thread_ref(r["thread"]), title=r["title"],
                           state=WaterfallView.State[f"STATE_{r['state'].upper()}"], start=when(r["start"]),
-                          end=when(r.get("end")), agents=[types.MemberRef(handle=h) for h in r["agents"]],
-                          machines=[types.MachineId(value=m) for m in r["machines"]], totals=totals(r["totals"]))
+                          end=when(r.get("end")), agents=[types.MemberRef(name=h) for h in r["agents"]],
+                          machines=[types.MachineRef(name=m) for m in r["machines"]], totals=totals(r["totals"]))
 
 
 def traces(b: dict) -> Block:
