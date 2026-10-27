@@ -19,7 +19,7 @@ Only the run logs of the machine it's installed on. The node writes these as eac
 
 The logs are on a Mac in `~/Library/Logs/message-board/runs`, elsewhere in `~/.local/state/message-board/runs`. Trace never reads how a run was started (its environment), and never opens `run-N.in`.
 
-Inputs and outputs have terminal colours removed. Anything that looks like a credential is hidden: tokens and keys (AWS, Stripe, GitHub, Slack, Anthropic, JWTs), private keys, passwords in URLs, `Authorization` headers, and any value whose name contains KEY, TOKEN, SECRET or PASS. Each is cut to 300 characters, the node's limit.
+Inputs and outputs have terminal colours removed. Anything that looks like a credential is hidden: tokens and keys (AWS, Stripe, GitHub, Slack, Anthropic, Linear, Hugging Face, npm, ElevenLabs, Google, Grafana, JWTs), private keys, passwords in URLs, `Authorization` headers, any value whose name contains KEY, TOKEN, SECRET or PASS, and any run of 32 or more letters and digits that mixes upper case, lower case and digits. Git SHAs and sha256s stay readable. Each is cut to 300 characters, the node's limit.
 
 ## The last 7 days
 
