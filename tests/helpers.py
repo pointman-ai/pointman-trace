@@ -18,19 +18,19 @@ class Log:
     """One run's log, written a few events at a time, as a run writes it."""
 
     def __init__(self, folder: Path, rid: int, handle: str = "scene", *, startup: bool = True,
-                 thread: int | None = None, cost_before: float | None = None, live: bool = True,
+                 channel: int | None = None, cost_before: float | None = None, live: bool = True,
                  prompt: str | None = None, start: int = T0):
         self.folder, self.rid, self.t = Path(folder), rid, start
         self.path = self.folder / f"run-{rid}.json"
         self.session = f"sess-{handle}"
         if prompt is None:
-            prompt = f"You are @{handle} on Pointman:\n\n[1] mention from @james in #x › “A thread”" + (
-                f" (thread {thread}):\n    hi" if thread else ":\n    hi")
+            prompt = f"You are @{handle} on Pointman:\n\n[1] mention from @james in “A channel”" + (
+                f" (channel {channel}):\n    hi" if channel else ":\n    hi")
         (self.folder / f"run-{rid}.prompt").write_text(json.dumps(
             {"type": "user", "message": {"role": "user", "content": prompt}}) + "\n")
         os.utime(self.folder / f"run-{rid}.prompt", (start / 1000, start / 1000))
         if live:
-            self.meta(handle=handle, thread=thread, cost_before=cost_before)
+            self.meta(handle=handle, channel=channel, cost_before=cost_before)
         self.write([{"type": "system", "subtype": "hook_started",
                      "hook_name": "SessionStart:startup" if startup else "SessionStart:resume"},
                     {"type": "system", "subtype": "session_title_changed", "title": f"board @{handle}",

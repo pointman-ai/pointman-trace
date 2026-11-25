@@ -17,32 +17,32 @@ class RunTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_a_turn_is_its_model_and_tool_calls(self):
-        log = Log(self.dir, 7, "scene", thread=17979, cost_before=1.5,
-                  prompt="You are @scene on Pointman:\n\n[18083] mention from @loupe in #extensions › "
-                         "“agent-visualizers” (thread 17979):\n    look at this")
+        log = Log(self.dir, 7, "scene", channel=17979, cost_before=1.5,
+                  prompt="You are @scene on Pointman:\n\n[18083] mention from @loupe in "
+                         "“agent-visualizers” (channel 17979):\n    look at this")
         run = Run(7, log.path)
         run.look()
         turn, = run.turns
         self.assertEqual(turn.id, "r:7")
         self.assertEqual(turn.start, T0)
         self.assertEqual(run.handle, "scene")
-        self.assertEqual(turn.detail, "mention from @loupe in #extensions")
+        self.assertEqual(turn.detail, "mention from @loupe in “agent-visualizers” (channel 17979)")
         self.assertEqual(run.titles, {17979: "agent-visualizers"})
         first, = turn.spans                    # the run has begun: its first model call is running
         self.assertEqual((first["kind"], first["state"], first["start_ms"]), ("llm", "running", T0))
 
-        log.say("req1", text("Reading it"), tool("tu1", "mcp__pointman__read_thread", thread_id=17979),
+        log.say("req1", text("Reading it"), tool("tu1", "mcp__pointman__get_channel", channel=17979),
                 tool("tu2", "Bash", command="ls", description="List files"))
         run.look()
         llm, read, bash = turn.spans
         self.assertIs(llm, first)
-        self.assertEqual(llm["detail"], "read_thread, Bash")
+        self.assertEqual(llm["detail"], "get_channel, Bash")
         self.assertEqual((llm["tokens_in"], llm["tokens_out"], llm["tokens_cached"]), (15, 20, 1000))
         self.assertIsNone(llm["end_ms"])
-        self.assertEqual((read["name"], read["detail"], read["service"]), ("read_thread", "17979", "Pointman"))
+        self.assertEqual((read["name"], read["detail"], read["service"]), ("get_channel", "17979", "Pointman"))
         self.assertEqual((bash["name"], bash["detail"], bash["service"]), ("Bash", "List files", "shell"))
 
-        log.results(("tu1", "the thread", False))
+        log.results(("tu1", "the channel", False))
         run.look()
         self.assertEqual(llm["end_ms"], T0 + 1000)        # its last message
         self.assertEqual(read["state"], "ok")
@@ -52,13 +52,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual(bash["state"], "error")
         nxt = turn.spans[-1]
         self.assertEqual((nxt["kind"], nxt["state"], nxt["start_ms"]), ("llm", "running", T0 + 2000))
-        log.say("req2", text("Done."), tool("tu3", "mcp__pointman__post_message", thread_id=18000,
-                                            text="/spawn helper claude\nDo the thing"))
+        log.say("req2", text("Done."), tool("tu3", "mcp__pointman__create_post", channel=18000,
+                                            blocks=["/spawn helper claude\nDo the thing"]))
         log.results(("tu3", "posted", False))
         log.say("req3", text("All done."))
         log.result(4.0, took=9000)
         run.look()
-        self.assertEqual(turn.threads, {17979, 18000})
+        self.assertEqual(turn.channels, {17979, 18000})
         self.assertEqual(run.spawns, ["helper"])
         self.assertEqual(turn.end, T0 + 9000)
         self.assertAlmostEqual(turn.cost, 2.5)
@@ -66,23 +66,22 @@ class RunTests(unittest.TestCase):
         self.assertEqual(turn.texts[nxt["id"]][1], "Done.")
         self.assertEqual(turn.span()["state"], "ok")
 
-    def test_the_tools_names_from_the_switch_read_as_the_old_ones_did(self):
-        # create_post and get_thread name their thread as `thr_N` (or a number); a post's words are its blocks. Logs
-        # from before the switch keep post_message and read_thread, which the test above reads.
-        log = Log(self.dir, 9, "scene", thread=17979)
+    def test_a_channel_by_its_id_and_every_blocks_words(self):
+        # create_post and get_channel name their channel as `ch_N` (or a number); a post's words are its blocks.
+        log = Log(self.dir, 9, "scene", channel=17979)
         run = Run(9, log.path)
-        log.say("req1", tool("tu1", "mcp__pointman__get_thread", thread="thr_17979"))
-        log.results(("tu1", "the thread", False))
-        log.say("req2", tool("tu2", "mcp__pointman__create_post", thread="thr_18000",
+        log.say("req1", tool("tu1", "mcp__pointman__get_channel", channel="ch_17979"))
+        log.results(("tu1", "the channel", False))
+        log.say("req2", tool("tu2", "mcp__pointman__create_post", channel="ch_18000",
                              blocks=["/spawn helper claude\nDo the thing", {"text": {"markdown": "/spawn other claude"}}]))
         log.results(("tu2", "posted", False))
         log.say("req3", text("All done."))
         log.result(1.0, took=5000)
         run.look()
         turn, = run.turns
-        read = next(s for s in turn.spans if s["name"] == "get_thread")
+        read = next(s for s in turn.spans if s["name"] == "get_channel")
         self.assertEqual((read["detail"], read["service"]), ("17979", "Pointman"))
-        self.assertEqual(turn.threads, {17979, 18000})
+        self.assertEqual(turn.channels, {17979, 18000})
         self.assertEqual(run.spawns, ["helper", "other"])
 
     def test_a_sub_agent_nests_under_its_task(self):
@@ -141,10 +140,10 @@ class RunTests(unittest.TestCase):
         self.assertAlmostEqual(idx.runs[12].turns[0].cost, 1.25)
 
     def test_the_meta_file_is_read_for_who_only(self):
-        log = Log(self.dir, 13, "scene", thread=42, cost_before=2.0)
+        log = Log(self.dir, 13, "scene", channel=42, cost_before=2.0)
         run = Run(13, log.path)
         run.look()
-        self.assertEqual((run.handle, run.thread, run.cost_before), ("scene", 42, 2.0))
+        self.assertEqual((run.handle, run.channel, run.cost_before), ("scene", 42, 2.0))
         self.assertNotIn("never-read", repr(vars(run)))
 
     def test_clean_hides_credentials_and_cuts(self):
@@ -238,7 +237,7 @@ class CleanTests(unittest.TestCase):
 
     def test_ordinary_text_stays(self):
         for s in ("19 passed: all good", "Tests passed=19", "a basic test of bearer tokens",
-                  "session 38d8ce55-f390-5969-b346-d01750c96d04 ok", "read_thread 17979",
+                  "session 38d8ce55-f390-5969-b346-d01750c96d04 ok", "get_channel 17979",
                   "git push origin main@{u}", "https://github.com/pointman-ai/pointman-trace/pull/3"):
             self.assertEqual(clean(s), s)
 

@@ -1,13 +1,13 @@
 """The week of traces the Live pane lists (EXT-70; James, Pointman thread 17979 [19168]: "most recent + live traces
-by default", searchable and filterable): one row per thread an agent worked in on this machine in the last 7 days.
+by default", searchable and filterable): one row per channel an agent worked in on this machine in the last 7 days.
 
-- **Each run summed up once:** a finished run's log doesn't change, so its summary (per thread: when, which agent,
+- **Each run summed up once:** a finished run's log doesn't change, so its summary (per channel: when, which agent,
   and the waterfall's totals) is kept in the extension's state folder and only new runs are read after that. A
   week on mac-m4 is ~2,000 runs and 1.3 GB of logs: ~20 s the first time, in the background, with the list
   `loading` meanwhile. Reading it all into the Index instead would hold ~400 MB.
 - **Runs the Index has** (its look back, and every run still going) are summed up from it as they grow; the kept
   summaries give the rest.
-- **A row** is a thread: its title, its agents, its first and last activity, and its totals, summed over every run
+- **A row** is a channel: its title, its agents, its first and last activity, and its totals, summed over every run
   that worked in it.
 """
 
@@ -28,14 +28,14 @@ FORMAT = 1                  # of a kept summary: one of another format is read a
 
 
 def summarize(run: Run) -> dict:
-    """A run's summary: for each thread it worked in, when, and the waterfall's totals there."""
-    threads: dict[int, dict] = {}
+    """A run's summary: for each channel it worked in, when, and the waterfall's totals there."""
+    channels: dict[int, dict] = {}
     for t in run.turns:
-        for n in t.threads:
+        for n in t.channels:
             start = t.span(n)["start_ms"]
-            r = threads.get(n)
+            r = channels.get(n)
             if r is None:
-                r = threads[n] = {"start": start, "end": 0, "running": False, **tally([], n)}
+                r = channels[n] = {"start": start, "end": 0, "running": False, **tally([], n)}
             r["start"] = min(r["start"], start)
             r["end"] = max(r["end"], t.last_for(n))
             r["running"] = r["running"] or t.running_for(n)
@@ -43,11 +43,11 @@ def summarize(run: Run) -> dict:
                 r[k] += v
     done = [t.total for t in run.turns if t.total is not None]
     return {"v": FORMAT, "rid": run.rid, "handle": run.handle or f"run-{run.rid}", "session": run.session,
-            "total": done[-1] if done else None, "threads": threads, "titles": dict(run.titles)}
+            "total": done[-1] if done else None, "threads": channels, "titles": dict(run.titles)}
 
 
 def rows(summaries, titles: dict[int, str], machine: str | None, now_ms: int, days: float = DAYS) -> list[dict]:
-    """The list: a row per thread worked in within `days`, from runs' summaries (oldest run first, so a newer
+    """The list: a row per channel worked in within `days`, from runs' summaries (oldest run first, so a newer
     title wins). Running first, newest started first; then by last activity, newest first."""
     merged: dict[int, dict] = {}
     named: dict[int, str] = {}
@@ -56,7 +56,7 @@ def rows(summaries, titles: dict[int, str], machine: str | None, now_ms: int, da
         for n, r in s["threads"].items():
             m = merged.get(n)
             if m is None:
-                m = merged[n] = {"thread": n, "start": r["start"], "end": r["end"], "running": False, "agents": {},
+                m = merged[n] = {"channel": n, "start": r["start"], "end": r["end"], "running": False, "agents": {},
                                  **tally([], n)}
             m["start"] = min(m["start"], r["start"])
             m["end"] = max(m["end"], r["end"])
@@ -70,8 +70,8 @@ def rows(summaries, titles: dict[int, str], machine: str | None, now_ms: int, da
     done = sorted((m for m in merged.values() if not m["running"] and m["end"] >= cutoff), key=lambda m: -m["end"])
     out = []
     for m in live + done:
-        n = m["thread"]
-        out.append({"id": str(n), "thread": n, "title": named.get(n) or f"Thread {n}",
+        n = m["channel"]
+        out.append({"id": str(n), "channel": n, "title": named.get(n) or f"Channel {n}",
                     "state": "live" if m["running"] else "done", "start": iso(m["start"]),
                     "end": None if m["running"] else iso(m["end"]),
                     "agents": sorted(m["agents"], key=lambda h: (m["agents"][h], h)),
@@ -168,7 +168,7 @@ class History:
                 continue
             run = Run(rid, path, texts=False)
             if self.notes is not None:
-                self.notes.seed(run)        # the thread that woke it, noted while it went: its meta's gone
+                self.notes.seed(run)        # the channel that woke it, noted while it went: its meta's gone
             run.look(now)
             if not run.ended:
                 continue                     # still going: the Index has it
@@ -180,7 +180,7 @@ class History:
             read += 1
             time.sleep(0)                    # let the panes' ticks in
         with self.lock:
-            # by its log's age, as above: a run that worked in no thread is kept too, or it'd be read every time
+            # by its log's age, as above: a run that worked in no channel is kept too, or it'd be read every time
             old = [rid for rid, s in self.summaries.items() if s.get("mtime", 0) < cutoff]
             for rid in old:
                 del self.summaries[rid]
