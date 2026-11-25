@@ -2,7 +2,7 @@
 
 The node keeps each run's Claude Code stream (stream-json, one event a line) as run-N.json: on a Mac in
 ~/Library/Logs/message-board/runs, elsewhere in ~/.local/state/message-board/runs. While a run is live, its
-run-N.meta.json is beside it (who, the thread that woke it, the session's cost before it, the run-keep
+run-N.meta.json is beside it (who, the channel that woke it, the session's cost before it, the run-keep
 process), and so is its first prompt, run-N.prompt. run-N.in is a pipe and is never opened.
 
 A run is one or more turns, each a wake: from the run's start (or its last turn's `result`) to its own
@@ -16,10 +16,10 @@ A run is one or more turns, each a wake: from the run's start (or its last turn'
 A model call starts when its context hands back to the model (the turn's start, or the last of its tool
 results), and runs until its next message.
 
-**Which thread a call is for:** the one the turn is working in when it starts. A turn starts in the thread that
-woke it; a call that names another thread (`thread`, or `thread_id` before the switch) moves it there, along with the model call that made it.
-A resident session's later wakes start in none, and their first calls wait for the first thread they name.
-So a session that works on several threads in one turn shows each thread's part in that thread's trace.
+**Which channel a call is for:** the one the turn is working in when it starts. A turn starts in the channel that
+woke it; a call that names another channel (`channel`) moves it there, along with the model call that made it.
+A resident session's later wakes start in none, and their first calls wait for the first channel they name.
+So a session that works on several channels in one turn shows each channel's part in that channel's trace.
 """
 
 from __future__ import annotations
@@ -43,8 +43,8 @@ NOTES_FOR = 8 * 86_400   # seconds a run's notes are kept: the Live list's week,
 NAME = re.compile(r"^run-(\d+)\.json$")
 META = re.compile(r"^run-(\d+)\.meta\.json$")
 HANDLE = re.compile(r"board @([a-z0-9][a-z0-9_-]{0,63})")
-TITLE = re.compile(r"“([^”\n]{1,120})” \(thread (\d+)\)")
-THREAD = re.compile(r"\(thread (\d+)\)")
+TITLE = re.compile(r"“([^”\n]{1,120})” \(channel (\d+)\)")
+CHANNEL = re.compile(r"\(channel (\d+)\)")
 POST = re.compile(r"^\[\d+\] (.+?)(?: ›|:)", re.M)
 SPAWN = re.compile(r"^/spawn ([a-z0-9][a-z0-9-]*)", re.M)
 TASKS = ("Task", "Agent")
@@ -128,7 +128,7 @@ def friendly(name: str, inp) -> tuple[str, str]:
     """A tool call's row name and its dim detail."""
     inp = inp if isinstance(inp, dict) else {}
     if name.startswith("mcp__"):
-        what = (thread_of(called_thread(inp)) or inp.get("message_id") or inp.get("post") or inp.get("ref")
+        what = (channel_of(inp.get("channel")) or inp.get("in_thread") or inp.get("post") or inp.get("ref")
                 or inp.get("task") or inp.get("query") or "")
         return name.split("__")[-1], str(what)
     if name == "Bash":
@@ -153,31 +153,22 @@ def text_of(content) -> str:
     return " ".join(out)
 
 
-def thread_of(value) -> int | None:
-    """A thread's number, from a number, its digits or its id (`thr_5918`)."""
+def channel_of(value) -> int | None:
+    """A channel's number, from a number, its digits or its id (`ch_5918`)."""
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return value if value > 0 else None
     if isinstance(value, str):
-        value = value.removeprefix("thr_")
+        value = value.removeprefix("ch_")
         if value.isdigit():
             return int(value) or None
     return None
 
 
-def called_thread(inp: dict):
-    """The thread a Pointman tool call names: `thread` from the switch (create_post, get_thread), `thread_id` in
-    the run logs from before it (post_message, read_thread)."""
-    return inp.get("thread") if inp.get("thread") is not None else inp.get("thread_id")
-
-
 def posted_words(raw: str, inp: dict) -> str | None:
-    """What a post call says: create_post's and create_thread's text blocks, or post_message's text in the run logs
-    from before the switch."""
-    if raw.endswith("post_message") and isinstance(inp.get("text"), str):
-        return inp["text"]
-    if raw.endswith(("create_post", "create_thread")) and isinstance(inp.get("blocks"), list):
+    """What a post call says: create_post's and create_channel's text blocks."""
+    if raw.endswith(("create_post", "create_channel")) and isinstance(inp.get("blocks"), list):
         words = [b if isinstance(b, str) else ((b.get("text") or {}).get("markdown") or "")
                  for b in inp["blocks"] if isinstance(b, (str, dict))]
         return "\n".join(w for w in words if isinstance(w, str) and w)
@@ -208,9 +199,9 @@ class Turn:
         self.error = False
         self.before: float | None = None      # the session's cost before it, and after it
         self.total: float | None = None
-        self.first: int | None = None         # the thread it started in, and the one it's in at its end
+        self.first: int | None = None         # the channel it started in, and the one it's in at its end
         self.final: int | None = None
-        self.untagged: list[dict] = []        # calls made before it named a thread
+        self.untagged: list[dict] = []        # calls made before it named a channel
         self.detail = ""
         self.prompt: str | None = None
         self.spans: list[dict] = []
@@ -226,24 +217,24 @@ class Turn:
         return self.end is None
 
     @property
-    def threads(self) -> set[int]:
-        return {s["_thread"] for s in self.spans if s.get("_thread")} | ({self.first} if self.first else set())
+    def channels(self) -> set[int]:
+        return {s["_channel"] for s in self.spans if s.get("_channel")} | ({self.first} if self.first else set())
 
     @property
     def now(self) -> int | None:
-        """The thread it's working in now, or was at its end."""
+        """The channel it's working in now, or was at its end."""
         return self.run.cur if self.end is None else self.final
 
-    def mine(self, thread: int | None) -> list[dict]:
-        return self.spans if thread is None else [s for s in self.spans if s.get("_thread") == thread]
+    def mine(self, channel: int | None) -> list[dict]:
+        return self.spans if channel is None else [s for s in self.spans if s.get("_channel") == channel]
 
-    def running_for(self, thread: int | None) -> bool:
-        return self.end is None and (thread is None or self.now == thread)
+    def running_for(self, channel: int | None) -> bool:
+        return self.end is None and (channel is None or self.now == channel)
 
-    def last_for(self, thread: int | None) -> int:
-        if thread is None or self.now == thread:
+    def last_for(self, channel: int | None) -> int:
+        if channel is None or self.now == channel:
             return self.end or self.last
-        return max((s["end_ms"] or s["start_ms"] for s in self.mine(thread)), default=self.start)
+        return max((s["end_ms"] or s["start_ms"] for s in self.mine(channel)), default=self.start)
 
     @property
     def cost(self) -> float | None:
@@ -251,20 +242,20 @@ class Turn:
             return None
         return self.total - self.before
 
-    def span(self, thread: int | None = None) -> dict:
-        """Its run span; for a thread, only its part there: from its first call in it to its last, and its cost
+    def span(self, channel: int | None = None) -> dict:
+        """Its run span; for a channel, only its part there: from its first call in it to its last, and its cost
         shared out by model calls."""
-        own = self.mine(thread)
-        start = self.start if thread is None or self.first == thread else min(
+        own = self.mine(channel)
+        start = self.start if channel is None or self.first == channel else min(
             (s["start_ms"] for s in own), default=self.start)
-        if self.running_for(thread):
+        if self.running_for(channel):
             end = None
-        elif thread is None or self.now == thread:
+        elif channel is None or self.now == channel:
             end = self.end
         else:
-            end = self.last_for(thread)
+            end = self.last_for(channel)
         cost = self.cost
-        if cost is not None and thread is not None:
+        if cost is not None and channel is not None:
             calls = sum(s["kind"] == "llm" for s in self.spans)
             cost = cost * sum(s["kind"] == "llm" for s in own) / calls if calls else cost
         models = Counter(s.get("model") for s in own if s["kind"] == "llm" and s.get("model")) or self.models
@@ -272,7 +263,7 @@ class Turn:
                 "name": f"Run {self.run.rid}" + (f" · wake {self.k + 1}" if self.k else ""),
                 "detail": self.detail, "model": models.most_common(1)[0][0] if models else None,
                 "start_ms": start, "end_ms": end, "cost_usd": round(cost, 4) if cost is not None else None,
-                "state": "running" if end is None else "error" if self.error and self.now == thread else "ok"}
+                "state": "running" if end is None else "error" if self.error and self.now == channel else "ok"}
 
 
 class Run:
@@ -286,7 +277,7 @@ class Run:
         self.session: str | None = None
         self.startup = False                 # a new session, so nothing was spent before it
         self.client = "claude"
-        self.thread: int | None = None       # the thread that woke it (its meta's)
+        self.channel: int | None = None       # the channel that woke it (its meta's)
         self.cost_before: float | None = None
         self.keeper: int | None = None
         self.started: int | None = None
@@ -295,7 +286,7 @@ class Run:
         self.ctx: dict = {}                  # None, or a task's tool_use id → its model calls' state
         self.uses: dict[str, tuple] = {}     # an open tool_use's id → (turn, span, context)
         self.n = 0                           # model calls so far, for their ids
-        self.cur: int | None = None          # the thread its open turn is working in
+        self.cur: int | None = None          # the channel its open turn is working in
         self.ended = False
         self.spawns: list[str] = []          # the agents it /spawn'ed
         self.titles: dict[int, str] = {}
@@ -338,7 +329,7 @@ class Run:
             return None
         self.handle = self.handle or (m.get("handle") if isinstance(m.get("handle"), str) else None)
         self.client = m.get("client") if isinstance(m.get("client"), str) else self.client
-        self.thread = thread_of(m.get("thread")) or self.thread
+        self.channel = channel_of(m.get("channel")) or self.channel
         if isinstance(m.get("cost_before"), (int, float)) and self.cost_before is None:
             self.cost_before = float(m["cost_before"])
         if isinstance(m.get("keeper"), int):
@@ -417,14 +408,14 @@ class Run:
         self.cur = None
         if k == 0:
             prompt = self._prompt()
-            woke = self.thread
+            woke = self.channel
             if prompt:
                 body = prompt.split("\n\n", 1)[-1]
                 turn.prompt = clean(body)
                 self._titles(prompt)
                 m = POST.search(prompt)
                 turn.detail = clean(m.group(1), DETAIL) if m else ""
-                woke = woke or next((int(n) for n in THREAD.findall(prompt)), None)
+                woke = woke or next((int(n) for n in CHANNEL.findall(prompt)), None)
             self.cur = turn.first = woke
         self.turns.append(turn)
         self.open = turn
@@ -451,21 +442,21 @@ class Run:
         return span
 
     def _tag(self, turn: Turn, span: dict) -> None:
-        span["_turn"], span["_thread"] = turn, self.cur
+        span["_turn"], span["_channel"] = turn, self.cur
         turn.spans.append(span)
         if self.cur is None:
             turn.untagged.append(span)
 
-    def _move(self, turn: Turn, thread: int, llm: dict | None) -> None:
-        """It's working in another thread now: so is the model call that named it, and what waited for one."""
-        self.cur = thread
+    def _move(self, turn: Turn, channel: int, llm: dict | None) -> None:
+        """It's working in another channel now: so is the model call that named it, and what waited for one."""
+        self.cur = channel
         if turn.first is None:
-            turn.first = thread
+            turn.first = channel
         for s in turn.untagged:
-            s["_thread"] = thread
+            s["_channel"] = channel
         turn.untagged.clear()
         if llm is not None:
-            llm["_thread"] = thread
+            llm["_channel"] = channel
 
     def _close(self, cx: dict, state: str = "ok") -> None:
         llm = cx.get("llm")
@@ -506,7 +497,7 @@ class Run:
             if b.get("type") == "text" and b.get("text"):
                 said.append(b["text"])
             elif b.get("type") == "tool_use" and isinstance(b.get("id"), str):
-                n = thread_of(called_thread(b["input"])) if isinstance(b.get("input"), dict) else None
+                n = channel_of(b["input"].get("channel")) if isinstance(b.get("input"), dict) else None
                 if n is not None and n != self.cur and c is None:
                     self._move(llm["_turn"], n, llm)
                 self._tool(llm["_turn"], c, cx, b, t)
@@ -609,19 +600,19 @@ class Run:
 
 
 class Notes:
-    """What each run's meta and prompt say while it's going: the thread that woke it, and the thread titles its
-    prompt names. The node takes both away when the run ends, so a run read after that, which never named a thread
-    in a tool call, would be in no thread (EXT-70: 788 of mac-m4's 1,970 runs in a week). Looked at every few
+    """What each run's meta and prompt say while it's going: the channel that woke it, and the channel titles its
+    prompt names. The node takes both away when the run ends, so a run read after that, which never named a channel
+    in a tool call, would be in no channel (EXT-70: 788 of mac-m4's 1,970 runs in a week). Looked at every few
     seconds, kept in `file` when there is one."""
 
     def __init__(self, folder: Path, file: Path | None):
         self.folder, self.file = Path(folder), file
-        self.runs: dict[int, dict] = {}       # run id → {"thread", "titles", "at"}
+        self.runs: dict[int, dict] = {}       # run id → {"thread" (its channel), "titles", "at"}
         self.lock = threading.Lock()
         try:
             got = json.loads(file.read_text()) if file else {}
             for rid, n in (got if isinstance(got, dict) else {}).items():
-                self.runs[int(rid)] = {"thread": thread_of(n.get("thread")), "at": float(n.get("at") or 0),
+                self.runs[int(rid)] = {"thread": channel_of(n.get("thread")), "at": float(n.get("at") or 0),
                                        "titles": {int(k): str(v) for k, v in (n.get("titles") or {}).items()}}
         except (OSError, ValueError, TypeError, AttributeError):
             pass
@@ -645,9 +636,9 @@ class Notes:
                 continue
             run = Run(rid, self.folder / f"run-{rid}.json")
             run._titles(run._prompt() or "")
-            thread = thread_of(meta.get("thread")) if isinstance(meta, dict) else None
-            if thread or run.titles:
-                new[rid] = {"thread": thread, "titles": run.titles, "at": now}
+            channel = channel_of(meta.get("channel")) if isinstance(meta, dict) else None
+            if channel or run.titles:
+                new[rid] = {"thread": channel, "titles": run.titles, "at": now}
         with self.lock:
             self.runs.update(new)
             old = [rid for rid, n in self.runs.items() if n["at"] < now - NOTES_FOR]
@@ -669,7 +660,7 @@ class Notes:
         with self.lock:
             n = self.runs.get(run.rid)
         if n is not None:
-            run.thread = run.thread or n["thread"]
+            run.channel = run.channel or n["thread"]
             run.titles.update(n["titles"])
 
 
@@ -740,8 +731,8 @@ class Index:
     def turns(self) -> list[Turn]:
         return [t for rid in sorted(self.runs) for t in self.runs[rid].turns]
 
-    def title(self, thread: int) -> str:
-        return self.titles.get(thread) or f"Thread {thread}"
+    def title(self, channel: int) -> str:
+        return self.titles.get(channel) or f"Channel {channel}"
 
 
 def main(argv: list[str]) -> None:

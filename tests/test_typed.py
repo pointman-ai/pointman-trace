@@ -33,15 +33,15 @@ class TypedTests(unittest.TestCase):
 
     def turns(self):
         self.idx.refresh()
-        return [t for t in self.idx.turns() if 500 in t.threads]
+        return [t for t in self.idx.turns() if 500 in t.channels]
 
     def content(self, *blocks):
         return types.PaneContent(blocks=typed.blocks(list(blocks)))
 
     def test_a_waterfalls_edits_apply_as_its_own(self):
-        log = Log(self.dir, 1, "scene", thread=500, cost_before=0.0)
+        log = Log(self.dir, 1, "scene", channel=500, cost_before=0.0)
         log.say("q1", tool("t1", "Bash", command="ls"))
-        w = Waterfall("tr", "A thread", thread=500)
+        w = Waterfall("tr", "A channel", channel=500)
         w.take(self.turns())
         shown = self.content(w.full({}))
         log.results(("t1", "a b", False))
@@ -60,10 +60,10 @@ class TypedTests(unittest.TestCase):
                          (types.WaterfallView.State.STATE_DONE, 1.5, "a b"))
 
     def test_blocks_go_as_the_protocols_json(self):
-        Log(self.dir, 1, "scene", thread=500).say("q1", tool("t1", "Bash", command="ls"))
-        w = Waterfall("t500", "A thread", thread=500, compact=True)
+        Log(self.dir, 1, "scene", channel=500).say("q1", tool("t1", "Bash", command="ls"))
+        w = Waterfall("t500", "A channel", channel=500, compact=True)
         w.take(self.turns())
-        row = {"id": "500", "thread": 500, "title": "A thread", "state": "live", "start": "2026-10-23T01:12:00Z",
+        row = {"id": "500", "channel": 500, "title": "A channel", "state": "live", "start": "2026-10-23T01:12:00Z",
                "end": None, "agents": ["scene"], "machines": ["mac-m4"],
                "totals": {"ms": 5, "cost_usd": 0.5, "tokens": 30, "tokens_cached": 1000, "llm_calls": 1,
                           "tool_calls": 1, "errors": 0}}
@@ -73,12 +73,12 @@ class TypedTests(unittest.TestCase):
         for b in typed.blocks(blocks):
             self.assertEqual(types.Block.from_json(b.to_json()), b)
         wf, listed, empty = (b.to_json() for b in typed.blocks(blocks))
-        self.assertEqual((wf["name"], wf["view"]["waterfall"]["thread"], wf["view"]["waterfall"]["compact"],
+        self.assertEqual((wf["name"], wf["view"]["waterfall"]["channel"], wf["view"]["waterfall"]["compact"],
                           [s["kind"] for s in wf["view"]["waterfall"]["spans"]]),
-                         ("t500", {"id": "thr_500"}, True, ["KIND_AGENT", "KIND_RUN"]))
+                         ("t500", {"id": "ch_500"}, True, ["KIND_AGENT", "KIND_RUN"]))
         item, = listed["view"]["traces"]["items"]
-        self.assertEqual((item["thread"], item["state"], item["agents"], item["machines"], "end" in item),
-                         ({"id": "thr_500"}, "STATE_LIVE", [{"name": "scene"}], [{"name": "mac-m4"}], False))
+        self.assertEqual((item["channel"], item["state"], item["agents"], item["machines"], "end" in item),
+                         ({"id": "ch_500"}, "STATE_LIVE", [{"name": "scene"}], [{"name": "mac-m4"}], False))
         self.assertEqual(empty, {"name": "none", "empty": {"title": "Nothing running"}})
 
 

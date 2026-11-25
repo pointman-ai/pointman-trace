@@ -1,10 +1,10 @@
 """The trace extension's process: `python -m pointman_trace`, started and spoken to by the node.
 
-- `/trace thread [n]` opens the `trace` pane: one thread's agent work on this machine as a live waterfall (the
-  thread it's run in, without n). An agent opens it with open_pane(extension="trace", pane="trace",
-  target={"thread": n}).
+- `/trace channel [n]` opens the `trace` pane: one channel's agent work on this machine as a live waterfall (the
+  channel it's run in, without n). An agent opens it with open_pane(extension="trace", pane="trace",
+  target={"channel": n}).
 - `/trace live` opens the `live` pane: every trace running now, then those finished in the last 2 h, each folded
-  to its agents' bars; ↩ on one opens its full trace. Below them, the `traces` block lists every thread worked in
+  to its agents' bars; ↩ on one opens its full trace. Below them, the `traces` block lists every channel worked in
   over the last 7 days, a row each, for the apps' navigator to search and filter (EXT-70); `more` pages back.
 - Once a second, while a pane is open, it reads what the run logs gained and sends each pane only its changes, as
   edits by block name and span id (typed.py makes the protocol's messages of them).
@@ -24,7 +24,7 @@ from pointman_extension import Extension, Refused
 
 from . import typed
 from .history import DAYS, History, rows, summarize
-from .runs import Index, Notes, run_logs, thread_of
+from .runs import Index, Notes, channel_of, run_logs
 from .trace import Waterfall
 
 LIVE_FOR = 2 * 3600 * 1000           # ms a finished trace stays in the Live pane
@@ -93,14 +93,14 @@ def when(v) -> int | None:
     return None
 
 
-class ThreadView:
-    """The `trace` pane: one thread's waterfall."""
+class ChannelView:
+    """The `trace` pane: one channel's waterfall."""
 
     seen: int | None = None              # the index's version it last showed, and when
     at = 0.0
 
-    def __init__(self, thread: int | None):
-        self.thread = thread
+    def __init__(self, channel: int | None):
+        self.channel = channel
         self.title = "Trace"
         self.reset()
 
@@ -110,21 +110,21 @@ class ThreadView:
 
     def update(self, idx: Index):
         """("set", blocks), ("edit", edits) or None."""
-        if self.thread is None:
-            return self._empty("Which thread?", "Run /trace thread <number>, or /trace thread in the thread.")
-        self.title = f"Trace · {idx.title(self.thread)}"[:TITLE_MAX]
+        if self.channel is None:
+            return self._empty("Which channel?", "Run /trace channel <number>, or /trace channel in the channel.")
+        self.title = f"Trace · {idx.title(self.channel)}"[:TITLE_MAX]
         if not idx.loaded:
             return self._empty("Reading the run logs…", f"Agents' runs on {machine()} in the last "
                                                       f"{idx.hours:g} h.")
-        turns = [t for t in idx.turns() if self.thread in t.threads]
+        turns = [t for t in idx.turns() if self.channel in t.channels]
         if self.wf is None:
             if not turns:
                 return self._empty("No agent work here yet", f"Nothing in the last {idx.hours:g} h on {machine()}: "
                                                              "it shows here as it starts.")
-            self.wf = Waterfall("tr", idx.title(self.thread), machine=ext.node.get("machine") or None)
+            self.wf = Waterfall("tr", idx.title(self.channel), machine=ext.node.get("machine") or None)
             self.wf.take(turns)
             return "set", [self.wf.full(idx.spawner)]
-        self.wf.title = idx.title(self.thread)
+        self.wf.title = idx.title(self.channel)
         self.wf.take(turns)
         got = self.wf.update(idx.spawner)
         if got is None:
@@ -179,13 +179,13 @@ class LiveView:
         now = int(time.time() * 1000)
         recent: dict[int, list] = {}
         for t in idx.turns():
-            for n in t.threads:
+            for n in t.channels:
                 if t.running_for(n) or t.last_for(n) >= now - LIVE_FOR:
                     recent.setdefault(n, []).append(t)
         for n, turns in recent.items():
             wf = self.wfs.get(n)
             if wf is None:
-                wf = self.wfs[n] = Waterfall(f"t{n}", idx.title(n), thread=n, compact=True,
+                wf = self.wfs[n] = Waterfall(f"t{n}", idx.title(n), channel=n, compact=True,
                                             machine=ext.node.get("machine") or None)
             wf.title = idx.title(n)
             wf.take(turns)
@@ -195,7 +195,7 @@ class LiveView:
         running = sorted((w for w in self.wfs.values() if w.running), key=lambda w: -w.first)
         done = sorted((w for w in self.wfs.values() if not w.running), key=lambda w: -w.last)
         shown = (running + done)[:max(LIVE_MAX, len(running))]
-        order = [w.thread for w in shown]
+        order = [w.channel for w in shown]
         if not shown:
             first = self.order != [] or self.listed is None
             self.order = []
@@ -248,7 +248,7 @@ class LiveView:
         was = self.listed or {}
         if listed == was:
             return []
-        same = [(r["thread"], r["state"]) for r in listed["items"]] == [(r["thread"], r["state"])
+        same = [(r["channel"], r["state"]) for r in listed["items"]] == [(r["channel"], r["state"])
                                                                          for r in was.get("items", [])]
         if (not now and same and listed["more"] == was.get("more") and listed["loading"] == was.get("loading")
                 and time.time() - self.listed_at < RECENT_EVERY):
@@ -330,8 +330,8 @@ def opened(pane, view) -> types.PaneOpenResponse:
 
 @ext.pane("trace")
 def open_trace(pane):
-    thread = thread_of(pane.target.get("thread")) or thread_of(typed.thread_number(pane.context.thread))
-    return opened(pane, ThreadView(thread))
+    channel = channel_of(pane.target.get("channel")) or channel_of(typed.channel_number(pane.context.channel))
+    return opened(pane, ChannelView(channel))
 
 
 @ext.pane("live")
@@ -341,13 +341,13 @@ def open_live(pane):
     return opened(pane, LiveView())
 
 
-@ext.command("trace.thread")
-def trace_thread(job):
-    n = thread_of(job.params.get("thread"))
+@ext.command("trace.channel")
+def trace_channel(job):
+    n = channel_of(job.params.get("channel"))
     # the pane opens on every machine running Trace, as one view (EXT-65), whichever machine answers this
-    return {"text": f"Opening the trace of thread {n}, from every machine running Trace." if n else
-            "Opening this thread's trace, from every machine running Trace.",
-            "pane": {"open": "trace", "target": {"thread": n} if n else {}}}
+    return {"text": f"Opening the trace of channel {n}, from every machine running Trace." if n else
+            "Opening this channel's trace, from every machine running Trace.",
+            "pane": {"open": "trace", "target": {"channel": n} if n else {}}}
 
 
 @ext.command("trace.live")
@@ -392,7 +392,7 @@ def tick() -> None:
 
 
 def note() -> None:
-    """Each run's thread while it's going, for reading it after it ends (EXT-70): panes or none."""
+    """Each run's channel while it's going, for reading it after it ends (EXT-70): panes or none."""
     with lock:
         took = notes()
     took.look()
