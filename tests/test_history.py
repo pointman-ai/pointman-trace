@@ -1,4 +1,4 @@
-"""The Live pane's week of traces (EXT-70): a row per thread from every run's summary, each finished run read once
+"""The Live pane's week of traces (EXT-70): a row per channel from every run's summary, each finished run read once
 and kept, and `more` paging back."""
 
 import importlib
@@ -37,8 +37,8 @@ class Base(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_log(self, rid, handle, thread, at, total, *, calls=1, startup=True, live=False):
-        log = Log(self.dir, rid, handle, thread=thread, start=self.start + at, startup=startup, live=live)
+    def run_log(self, rid, handle, channel, at, total, *, calls=1, startup=True, live=False):
+        log = Log(self.dir, rid, handle, channel=channel, start=self.start + at, startup=startup, live=live)
         for i in range(calls):
             log.say(f"q{rid}.{i}", tool(f"t{rid}.{i}", "Bash", command="ls"))
             log.results((f"t{rid}.{i}", "ok", i == 1))
@@ -52,7 +52,7 @@ class Base(unittest.TestCase):
 
 
 class Rows(Base):
-    def test_a_row_per_thread_with_its_agents_and_its_waterfalls_totals(self):
+    def test_a_row_per_channel_with_its_agents_and_its_waterfalls_totals(self):
         self.run_log(1, "scene", 500, 0, 0.5, calls=2)
         self.run_log(2, "loupe", 500, 60_000, 0.25)
         self.run_log(3, "scene", 600, 120_000, 0.9, startup=False)     # its session's 0.5 before: 0.4
@@ -60,15 +60,15 @@ class Rows(Base):
         idx.refresh(self.now)
         got = rows([summarize(idx.runs[r]) for r in sorted(idx.runs)], idx.titles, "mac-m4",
                    int(self.now * 1000))
-        self.assertEqual([r["thread"] for r in got], [600, 500])        # last activity, newest first
+        self.assertEqual([r["channel"] for r in got], [600, 500])        # last activity, newest first
         late, both = got
         self.assertEqual((both["id"], both["title"], both["state"], both["agents"], both["machines"]),
-                         ("500", "A thread", "done", ["scene", "loupe"], ["mac-m4"]))
+                         ("500", "A channel", "done", ["scene", "loupe"], ["mac-m4"]))
         self.assertEqual(late["totals"]["cost_usd"], 0.4)
         self.assertTrue(both["start"].endswith("Z") and both["end"] > both["start"])
-        # the same numbers as the thread's own waterfall
-        wf = Waterfall("tr", "A thread", thread=500)
-        wf.take([t for t in idx.turns() if 500 in t.threads])
+        # the same numbers as the channel's own waterfall
+        wf = Waterfall("tr", "A channel", channel=500)
+        wf.take([t for t in idx.turns() if 500 in t.channels])
         wf.full(idx.spawner)
         self.assertEqual(both["totals"], wf.head["totals"])
         self.assertEqual((both["totals"]["tool_calls"], both["totals"]["errors"], both["totals"]["cost_usd"]),
@@ -82,7 +82,7 @@ class Rows(Base):
         idx = Index(self.dir, 24)
         idx.refresh(time.time())
         got = rows([summarize(idx.runs[r]) for r in sorted(idx.runs)], idx.titles, None, int(time.time() * 1000))
-        self.assertEqual([(r["thread"], r["state"], r["end"], r["machines"]) for r in got],
+        self.assertEqual([(r["channel"], r["state"], r["end"], r["machines"]) for r in got],
                          [(700, "live", None, []), (500, "done", got[1]["end"], [])])
 
     def test_each_finished_run_is_read_once_and_kept(self):
@@ -102,14 +102,14 @@ class Rows(Base):
         self.assertEqual(kept.read(self.now + 1), 1)
         # its session's total before it came from what was kept: 0.9 − 0.5
         self.assertEqual(kept.summaries[3]["threads"][600]["cost_usd"], 0.4)
-        self.assertEqual([r["thread"] for r in rows(kept.snapshot(), {}, None, int(self.now * 1000))], [600, 500])
+        self.assertEqual([r["channel"] for r in rows(kept.snapshot(), {}, None, int(self.now * 1000))], [600, 500])
         # nowhere to keep it: read each time, the same rows
         bare = History(self.dir, None)
         self.assertEqual(bare.read(self.now + 1), 3)
         self.assertEqual(rows(bare.snapshot(), {}, None, 0), rows(kept.snapshot(), {}, None, 0))
 
-    def test_a_run_noted_while_it_went_keeps_its_thread_after(self):
-        going = self.run_log(1, "scene", 800, 0, 0, live=True)    # none of its calls names a thread
+    def test_a_run_noted_while_it_went_keeps_its_channel_after(self):
+        going = self.run_log(1, "scene", 800, 0, 0, live=True)    # none of its calls names a channel
         file = self.dir / "state" / "notes.json"
         self.assertTrue(Notes(self.dir, file).look())
         self.assertFalse(Notes(self.dir, file).look())            # noted once, and kept
@@ -121,12 +121,12 @@ class Rows(Base):
         os.utime(going.path, (gone, gone))
         bare = History(self.dir, None)
         bare.read(self.now)
-        self.assertEqual(bare.summaries[1]["threads"], {})        # without notes: in no thread
+        self.assertEqual(bare.summaries[1]["threads"], {})        # without notes: in no channel
         noted = History(self.dir, None, notes=Notes(self.dir, file))
         noted.read(self.now)
         self.assertEqual((list(noted.summaries[1]["threads"]), noted.summaries[1]["titles"]),
-                         ([800], {800: "A thread"}))
-        self.assertEqual([r["thread"] for r in rows(noted.snapshot(), {}, None, int(self.now * 1000))], [800])
+                         ([800], {800: "A channel"}))
+        self.assertEqual([r["channel"] for r in rows(noted.snapshot(), {}, None, int(self.now * 1000))], [800])
 
     def test_its_first_read_says_loading_until_done(self):
         self.run_log(1, "scene", 500, 0, 0.5)
@@ -167,13 +167,13 @@ class Paging(Base):
         kind, blocks = view.update(idx)
         first = blocks[-1]
         self.assertEqual((kind, first["type"], first["more"]), ("set", "traces", True))
-        self.assertEqual([r["thread"] for r in first["items"]], [505, 504])
+        self.assertEqual([r["channel"] for r in first["items"]], [505, 504])
         edits = view.more(first["items"][-1]["end"])
         self.assertEqual(len(edits), 1)
         got = listed(edits)
-        self.assertEqual(([r["thread"] for r in got["items"]], got["more"]), ([505, 504, 503, 502], True))
+        self.assertEqual(([r["channel"] for r in got["items"]], got["more"]), ([505, 504, 503, 502], True))
         got = listed(view.more(None))                          # from the oldest shown
-        self.assertEqual(([r["thread"] for r in got["items"]], got["more"]), ([505, 504, 503, 502, 501], False))
+        self.assertEqual(([r["channel"] for r in got["items"]], got["more"]), ([505, 504, 503, 502, 501], False))
         self.assertEqual(view.more(None), [])                  # nothing older
         self.assertIsNone(view.update(idx))                    # and nothing new
 
@@ -186,7 +186,7 @@ class Paging(Base):
         view = m.LiveView()
         view.update(idx)
         got = listed(view.more("2026-01-01T00:00:00.000Z"))
-        self.assertEqual(([r["thread"] for r in got["items"]], got["more"]), ([505, 504, 503, 502, 501], False))
+        self.assertEqual(([r["channel"] for r in got["items"]], got["more"]), ([505, 504, 503, 502, 501], False))
 
     def test_numbers_alone_wait_a_few_seconds(self):
         self.run_log(1, "scene", 501, 0, 0.1)
@@ -200,7 +200,7 @@ class Paging(Base):
         self.assertFalse(got and listed(got[1]))
         view.listed_at -= m.RECENT_EVERY
         kind, edits = view.update(idx)
-        self.assertEqual([r["thread"] for r in listed(edits)["items"]], [502, 501])
+        self.assertEqual([r["channel"] for r in listed(edits)["items"]], [502, 501])
 
 
 if __name__ == "__main__":

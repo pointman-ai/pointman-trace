@@ -8,7 +8,7 @@ from pointman_trace import trace
 from pointman_trace.runs import Index
 from pointman_trace.trace import Waterfall, check, order
 
-from helpers import T0, Log, text, tool
+from helpers import T0, Log, posted, text, tool
 
 
 def apply(block: dict, edits: list[dict]) -> dict:
@@ -46,26 +46,26 @@ class WaterfallTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def wf(self, thread: int = 500) -> Waterfall:
-        w = Waterfall("tr", "A thread", thread=thread)
+    def wf(self, channel: int = 500) -> Waterfall:
+        w = Waterfall("tr", "A channel", channel=channel)
         return w
 
-    def turns(self, thread: int = 500):
+    def turns(self, channel: int = 500):
         self.idx.refresh()
-        return [t for t in self.idx.turns() if thread in t.threads]
+        return [t for t in self.idx.turns() if channel in t.channels]
 
     def test_it_grows_by_appends_and_spans_put_again(self):
-        a = Log(self.dir, 1, "scene", thread=500, cost_before=0.0)
+        a = Log(self.dir, 1, "scene", channel=500, cost_before=0.0)
         w = self.wf()
         w.take(self.turns())
         block = w.full({})
         self.assertIsNone(check(block))
         self.assertEqual([s["kind"] for s in block["spans"]], ["agent", "run", "llm"])
         self.assertEqual(block["state"], "live")
-        self.assertEqual(block["thread"], 500)
+        self.assertEqual(block["channel"], 500)
         self.assertNotIn("compact", block)
 
-        a.say("q1", tool("t1", "mcp__pointman__post_message", thread_id=500, text="hi"))
+        a.say("q1", tool("t1", "mcp__pointman__create_post", channel="ch_500", blocks=["hi"]))
         a.results(("t1", "posted", False))
         w.take(self.turns())
         kind, edits = w.update({})
@@ -91,11 +91,11 @@ class WaterfallTests(unittest.TestCase):
         self.assertIsNone(w.update({}))                   # nothing new: nothing sent
 
     def test_a_new_agent_comes_before_its_runs(self):
-        Log(self.dir, 1, "scene", thread=500)
+        Log(self.dir, 1, "scene", channel=500)
         w = self.wf()
         w.take(self.turns())
         block = w.full({})
-        b = Log(self.dir, 2, "helper", thread=500, start=T0 + 5000)
+        b = Log(self.dir, 2, "helper", channel=500, start=T0 + 5000)
         b.say("x", text("hello"))
         w.take(self.turns())
         kind, edits = w.update({"helper": "scene"})
@@ -106,11 +106,11 @@ class WaterfallTests(unittest.TestCase):
         self.assertEqual(block["spans"][ids.index("a:helper")]["parent"], "a:scene")
 
     def test_an_earlier_start_sends_it_whole_again(self):
-        Log(self.dir, 2, "scene", thread=500, start=T0 + 60_000)
+        Log(self.dir, 2, "scene", channel=500, start=T0 + 60_000)
         w = self.wf()
         w.take(self.turns())
         w.full({})
-        Log(self.dir, 1, "other", thread=500, start=T0)
+        Log(self.dir, 1, "other", channel=500, start=T0)
         w.take(self.turns())
         kind, block = w.update({})
         self.assertEqual(kind, "set")
@@ -118,8 +118,8 @@ class WaterfallTests(unittest.TestCase):
         self.assertEqual(min(s["start_ms"] for s in block["spans"]), 0)
 
     def test_input_and_output_come_when_asked(self):
-        a = Log(self.dir, 1, "scene", thread=500, prompt="You are @scene:\n\n[9] mention from @james in #x › “A” "
-                                                          "(thread 500):\n  hi")
+        a = Log(self.dir, 1, "scene", channel=500, prompt="You are @scene:\n\n[9] mention from @james in “A” "
+                                                          "(channel 500):\n  hi")
         a.say("q1", tool("t1", "Bash", command="ls -la", description="List"))
         a.results(("t1", "file1 file2", False))
         w = self.wf()
@@ -138,9 +138,9 @@ class WaterfallTests(unittest.TestCase):
         self.assertEqual(w.open("nope"), [])
 
     def test_compact_keeps_agents_and_runs(self):
-        a = Log(self.dir, 1, "scene", thread=500)
+        a = Log(self.dir, 1, "scene", channel=500)
         a.say("q1", tool("t1", "Bash", command="ls"))
-        w = Waterfall("t500", "A thread", thread=500, compact=True)
+        w = Waterfall("t500", "A channel", channel=500, compact=True)
         w.take(self.turns())
         block = w.full({})
         self.assertTrue(block["compact"])
@@ -148,19 +148,19 @@ class WaterfallTests(unittest.TestCase):
         self.assertEqual(block["totals"]["tool_calls"], 1)
 
     def test_each_trace_says_its_machine(self):
-        a = Log(self.dir, 1, "scene", thread=500)
+        a = Log(self.dir, 1, "scene", channel=500)
         a.say("q1", tool("t1", "Bash", command="ls"))
-        w = Waterfall("t500", "A thread", thread=500, compact=True, machine="nixos")
+        w = Waterfall("t500", "A channel", channel=500, compact=True, machine="nixos")
         w.take(self.turns())
         self.assertEqual(w.full({})["machine"], "nixos")
         self.assertEqual(w.block()["machine"], "nixos")
-        bare = Waterfall("t500", "A thread", thread=500, compact=True)
+        bare = Waterfall("t500", "A channel", channel=500, compact=True)
         bare.take(self.turns())
         self.assertNotIn("machine", bare.full({}))     # a node that doesn't say its name: none rather than a guess
 
     def test_a_big_trace_folds_its_oldest_runs(self):
         for rid in range(1, 6):
-            log = Log(self.dir, rid, "scene", thread=500, live=rid == 5, start=T0 + rid * 600_000)
+            log = Log(self.dir, rid, "scene", channel=500, live=rid == 5, start=T0 + rid * 600_000)
             for i in range(10):
                 log.say(f"q{i}", tool(f"r{rid}t{i}", "Bash", command="true"))
                 log.results((f"r{rid}t{i}", "", False))
@@ -178,17 +178,30 @@ class WaterfallTests(unittest.TestCase):
         self.assertTrue(run1["detail"].startswith("21 calls folded"))
         self.assertEqual(block["totals"]["tool_calls"], 50)  # the totals still count everything
 
-    def test_a_turn_across_threads_shows_each_its_part(self):
-        a = Log(self.dir, 1, "scene", thread=500, cost_before=0.0)
-        a.say("q1", tool("t1", "mcp__pointman__read_thread", thread_id=500))
-        a.results(("t1", "the thread", False))
-        a.say("q2", tool("t2", "mcp__pointman__post_message", thread_id=600, text="over here"))
+    def test_a_call_drawn_here_that_moves_to_another_channel_leaves(self):
+        a = Log(self.dir, 1, "scene", channel=500, cost_before=0.0)
+        a.say("q0", tool("t0", "Bash", command="ls"))
+        a.results(("t0", "x", False))
+        a.say("q1", tool("t1", "mcp__pointman__create_post", in_thread="post_7", blocks=["hi"]))
+        w = self.wf()
+        w.take(self.turns())
+        self.assertIn("t:t1", [s["id"] for s in w.full({})["spans"]])     # its result isn't in: where it is, for now
+        a.results(("t1", posted(600), False))
+        w.take(self.turns())
+        kind, block = w.update({})
+        self.assertEqual((kind, [s["id"] for s in block["spans"]]), ("set", ["a:scene", "r:1", "l:1.1", "t:t0"]))
+
+    def test_a_turn_across_channels_shows_each_its_part(self):
+        a = Log(self.dir, 1, "scene", channel=500, cost_before=0.0)
+        a.say("q1", tool("t1", "mcp__pointman__get_channel", channel="ch_500"))
+        a.results(("t1", "the channel", False))
+        a.say("q2", tool("t2", "mcp__pointman__create_post", channel="ch_600", blocks=["over here"]))
         a.results(("t2", "posted", False))
         a.say("q3", tool("t3", "Bash", command="make"))
         self.idx.refresh()
         turn, = self.idx.turns()
-        self.assertEqual(turn.threads, {500, 600})
-        here, there = Waterfall("tr", "A", thread=500), Waterfall("tr", "B", thread=600)
+        self.assertEqual(turn.channels, {500, 600})
+        here, there = Waterfall("tr", "A", channel=500), Waterfall("tr", "B", channel=600)
         here.take([turn]), there.take([turn])
         a_block, b_block = here.full({}), there.full({})
         self.assertIsNone(check(a_block))
@@ -208,7 +221,7 @@ class WaterfallTests(unittest.TestCase):
         self.assertAlmostEqual(costs[0], 0.5, places=2)
 
     def test_a_burst_goes_as_one_put_of_its_spans(self):
-        a = Log(self.dir, 1, "scene", thread=500)
+        a = Log(self.dir, 1, "scene", channel=500)
         w = self.wf()
         w.take(self.turns())
         block = w.full({})

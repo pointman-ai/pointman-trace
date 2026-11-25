@@ -46,14 +46,14 @@ class ExtensionTests(unittest.TestCase):
         b = view.block(name)
         return b.view.waterfall.spans if b is not None else []
 
-    def test_a_thread_trace_opens_grows_and_shows_a_span(self):
-        log = Log(self.dir, 1, "scene", thread=500)
+    def test_a_channel_trace_opens_grows_and_shows_a_span(self):
+        log = Log(self.dir, 1, "scene", channel=500)
         log.say("q1", tool("t1", "Bash", command="echo hi", description="Say hi"))
-        view = self.node.open_pane("trace", {"thread": 500})
+        view = self.node.open_pane("trace", {"channel": 500})
         self.assertEqual(view.format, types.PaneFormat.PANE_FORMAT_BLOCKS)
         view.wait(lambda v: len(self.spans(v, "tr")) == 4)    # the logs weren't read yet: the next tick sets it
         wf = view.block("tr").view.waterfall
-        self.assertEqual((wf.title, wf.state), ("A thread", types.WaterfallView.State.STATE_LIVE))
+        self.assertEqual((wf.title, wf.state), ("A channel", types.WaterfallView.State.STATE_LIVE))
         self.assertEqual(wf.machine, types.MachineRef(name="mac-test"))     # the apps merge every machine's by it
         self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN, Span.Kind.KIND_LLM,
                                                       Span.Kind.KIND_TOOL])
@@ -78,29 +78,29 @@ class ExtensionTests(unittest.TestCase):
         self.assertIn("only opens", str(refused.exception))
         self.assertEqual(view.problems, [])
 
-    def test_a_pane_opened_from_a_thread_shows_that_thread(self):
-        Log(self.dir, 1, "scene", thread=500).say("q1", text("thinking"))
-        view = self.node.open_pane("trace", context=types.PaneContext(thread=types.ThreadRef(id="thr_500")))
+    def test_a_pane_opened_from_a_channel_shows_that_channel(self):
+        Log(self.dir, 1, "scene", channel=500).say("q1", text("thinking"))
+        view = self.node.open_pane("trace", context=types.PaneContext(channel=types.ChannelRef(id="ch_500")))
         view.wait(lambda v: v.block("tr") is not None)
-        self.assertEqual((view.title, view.block("tr").view.waterfall.title), ("Trace · A thread", "A thread"))
+        self.assertEqual((view.title, view.block("tr").view.waterfall.title), ("Trace · A channel", "A channel"))
 
     def test_live_lists_running_traces(self):
-        log = Log(self.dir, 1, "scene", thread=500)
+        log = Log(self.dir, 1, "scene", channel=500)
         log.say("q1", text("thinking"))
         view = self.node.open_pane("live")
         view.wait(lambda v: v.block("t500") is not None and v.block("recent") is not None
                   and v.block("recent").view.traces.items)
         wf = view.block("t500").view.waterfall
-        self.assertEqual((wf.compact, wf.thread.id, wf.state), (True, "thr_500",
+        self.assertEqual((wf.compact, wf.channel.id, wf.state), (True, "ch_500",
                                                                    types.WaterfallView.State.STATE_LIVE))
         self.assertEqual([s.kind for s in wf.spans], [Span.Kind.KIND_AGENT, Span.Kind.KIND_RUN])
-        # the week's list after it (EXT-70): a row per thread, this one running
+        # the week's list after it (EXT-70): a row per channel, this one running
         self.assertEqual([b.name for b in view.blocks], ["t500", "recent"])
         listed = view.block("recent").view.traces
         self.assertEqual((listed.days, listed.more), (7, False))
         row, = listed.items
-        self.assertEqual((row.thread.id, row.title, row.state, row.end, row.agents, row.machines),
-                         ("thr_500", "A thread", types.WaterfallView.State.STATE_LIVE, None,
+        self.assertEqual((row.channel.id, row.title, row.state, row.end, row.agents, row.machines),
+                         ("ch_500", "A channel", types.WaterfallView.State.STATE_LIVE, None,
                           [types.MemberRef(name="scene")], [types.MachineRef(name="mac-test")]))
         # nothing older to page back to; anything but open and more is refused
         view.input("more", block="recent", before=row.start.isoformat())
@@ -110,17 +110,17 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(view.problems, [])
 
     def test_commands_open_their_panes(self):
-        done = self.node.run("trace.thread", {"thread": 17979})
-        self.assertEqual(done.result["pane"], {"open": "trace", "target": {"thread": 17979}})
+        done = self.node.run("trace.channel", {"channel": 17979})
+        self.assertEqual(done.result["pane"], {"open": "trace", "target": {"channel": 17979}})
         done = self.node.run("trace.live", {})
         self.assertEqual(done.result["pane"], {"open": "live", "target": {}})
 
     def test_new_settings_start_it_again_on_them(self):
         other = Path(self.tmp.name, "other")
         other.mkdir()
-        Log(other, 1, "loupe", thread=600).say("q1", text("over here"))
+        Log(other, 1, "loupe", channel=600).say("q1", text("over here"))
         self.node.restart({"folder": str(other)})
-        view = self.node.open_pane("trace", {"thread": 600})
+        view = self.node.open_pane("trace", {"channel": 600})
         view.wait(lambda v: v.block("tr") is not None)
         self.assertEqual(self.spans(view, "tr")[0].id, "a:loupe")
 
@@ -140,7 +140,7 @@ class TickTests(unittest.TestCase):
     def test_edits_that_wont_apply_send_it_all_next_tick(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        log = Log(Path(tmp.name), 1, "scene", thread=500)
+        log = Log(Path(tmp.name), 1, "scene", channel=500)
         log.say("q1", text("thinking"))
         m = self.main()
         self.addCleanup(m.state.update, dict(m.state))
@@ -161,7 +161,7 @@ class TickTests(unittest.TestCase):
                 pass
 
         pane = Pane()
-        m.views[pane.id] = (pane, m.ThreadView(500))
+        m.views[pane.id] = (pane, m.ChannelView(500))
         self.addCleanup(m.views.clear)
         with mock.patch.object(m.ext, "panes", lambda: [pane]), mock.patch.object(m.ext, "event"), \
                 mock.patch.object(m.ext, "log"):

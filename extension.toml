@@ -1,12 +1,12 @@
-# Watch agents work: a thread's runs, model calls and tool calls as a live waterfall in a pane.
+# Watch agents work: a channel's runs, model calls and tool calls as a live waterfall in a pane.
 
 [extension]
 id = "trace"
 name = "Trace"
-version = "0.4.0"
+version = "0.5.0"
 publisher = "pointman-ai"
-summary = "Watch agents work: a thread's runs, model calls and tool calls as a live waterfall, every trace running now, and the last 7 days'."
-node = ">=0.4.0"
+summary = "Watch agents work: a channel's runs, model calls and tool calls as a live waterfall, every trace running now, and the last 7 days'."
+node = ">=0.5.0"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
 
 [run]
@@ -23,7 +23,7 @@ type = "object"
 [settings.properties.hours]
 type = "number"
 title = "Look back"
-description = "Hours of a thread's agent work a trace starts with."
+description = "Hours of a channel's agent work a trace starts with."
 minimum = 1
 maximum = 168
 default = 24
@@ -35,12 +35,12 @@ description = "The folder of this node's run logs. Empty: where the node keeps t
 default = ""
 
 [[commands]]
-kind = "trace.thread"
+kind = "trace.channel"
 machines = "any"                 # no machine named: any that runs Trace, whose pane opens on all (EXT-65)
-title = "A thread's trace"
-params = { type = "object", properties = { thread = { type = "integer", minimum = 1, description = "The thread's number; left out, the thread it's run in." } } }
-slash = "thread"
-summary = "Watch a thread's agent work as a live waterfall: /trace thread, or /trace thread 17979"
+title = "A channel's trace"
+params = { type = "object", properties = { channel = { type = "integer", minimum = 1, description = "The channel's number; left out, the channel it's run in." } } }
+slash = "channel"
+summary = "Watch a channel's agent work as a live waterfall: /trace channel, or /trace channel 17979"
 
 [[commands]]
 kind = "trace.live"

@@ -55,8 +55,8 @@ def check(block: dict) -> str | None:
         return "state must be live or done"
     if "compact" in block and not isinstance(block["compact"], bool):
         return "compact must be true or false"
-    if block.get("thread") is not None and not (isinstance(block["thread"], int) and block["thread"] > 0):
-        return "thread must be a thread's id"
+    if block.get("channel") is not None and not (isinstance(block["channel"], int) and block["channel"] > 0):
+        return "channel must be a channel's id"
     totals = block.get("totals")
     if totals is not None and not (isinstance(totals, dict) and all(v is None or amount(v) for v in totals.values())):
         return "totals must be numbers, none below 0"
@@ -107,13 +107,13 @@ def size(v) -> int:
     return len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode())
 
 
-def tally(turns, thread: int | None) -> dict:
-    """A waterfall's totals but its time, for these turns' work in a thread (all of it, for None): the Live list's
+def tally(turns, channel: int | None) -> dict:
+    """A waterfall's totals but its time, for these turns' work in a channel (all of it, for None): the Live list's
     rows add up the same (EXT-70)."""
     llm = tools = errors = tokens = cached = 0
     cost = 0.0
     for t in turns:
-        for s in t.mine(thread):
+        for s in t.mine(channel):
             if s["kind"] == "llm":
                 llm += 1
                 tokens += s["tokens_in"] + s["tokens_out"]
@@ -121,18 +121,18 @@ def tally(turns, thread: int | None) -> dict:
             else:
                 tools += 1
                 errors += s["state"] == "error"
-        cost += t.span(thread)["cost_usd"] or 0.0
+        cost += t.span(channel)["cost_usd"] or 0.0
     return {"cost_usd": cost, "tokens": tokens, "tokens_cached": cached, "llm_calls": llm, "tool_calls": tools,
             "errors": errors}
 
 
 class Waterfall:
-    """One waterfall block as the apps have it: a thread's turns, its agents above them. `compact` keeps only the
+    """One waterfall block as the apps have it: a channel's turns, its agents above them. `compact` keeps only the
     agents and their runs (the Live pane's)."""
 
-    def __init__(self, bid: str, title: str, *, thread: int | None = None, compact: bool = False,
+    def __init__(self, bid: str, title: str, *, channel: int | None = None, compact: bool = False,
                  machine: str | None = None):
-        self.bid, self.title, self.thread, self.compact = bid, title, thread, compact
+        self.bid, self.title, self.channel, self.compact = bid, title, channel, compact
         self.machine = machine                 # where its runs were: the apps merge every machine's (EXT-65)
         self.turns: dict[str, Turn] = {}       # every turn it has shown, kept while it's open
         self.started: int | None = None        # epoch ms its times count from
@@ -151,19 +151,19 @@ class Waterfall:
 
     @property
     def running(self) -> bool:
-        return any(t.running_for(self.thread) for t in self.turns.values())
+        return any(t.running_for(self.channel) for t in self.turns.values())
 
     @property
     def last(self) -> int:
-        return max((t.last_for(self.thread) for t in self.turns.values()), default=0)
+        return max((t.last_for(self.channel) for t in self.turns.values()), default=0)
 
     @property
     def first(self) -> int:
-        return min((t.span(self.thread)["start_ms"] for t in self.turns.values()), default=0)
+        return min((t.span(self.channel)["start_ms"] for t in self.turns.values()), default=0)
 
     def _spans(self, spawner: dict[str, str]) -> list[dict]:
         """Every span now, epoch ms, without input and output: agents, then each turn and its calls."""
-        runs = sorted(((t, t.span(self.thread)) for t in self.turns.values()), key=lambda x: (x[1]["start_ms"], x[0].id))
+        runs = sorted(((t, t.span(self.channel)) for t in self.turns.values()), key=lambda x: (x[1]["start_ms"], x[0].id))
         agents: dict[str, list[dict]] = {}
         for t, run in runs:
             agents.setdefault(t.handle, []).append(run)
@@ -187,7 +187,7 @@ class Waterfall:
             out.append(run)
             if self.compact or t.id in self.folded:
                 continue
-            calls = t.mine(self.thread)
+            calls = t.mine(self.channel)
             mine = {t.id, *(s["id"] for s in calls)}
             for s in calls:
                 s = {k: v for k, v in s.items() if not k.startswith("_")}
@@ -199,7 +199,7 @@ class Waterfall:
         return out
 
     def _totals(self) -> dict:
-        got = tally(self.turns.values(), self.thread)
+        got = tally(self.turns.values(), self.channel)
         return {"ms": max(0, self.last - self.first), **got, "cost_usd": round(got["cost_usd"], 2)}
 
     def _rel(self, s: dict) -> dict:
@@ -235,8 +235,8 @@ class Waterfall:
         b.update(self._on())
         if self.compact:
             b["compact"] = True
-        if self.thread:
-            b["thread"] = self.thread
+        if self.channel:
+            b["channel"] = self.channel
         return b
 
     def block(self, spans: bool = True) -> dict:
@@ -245,8 +245,8 @@ class Waterfall:
         b.update(self._on())
         if self.compact:
             b["compact"] = True
-        if self.thread:
-            b["thread"] = self.thread
+        if self.channel:
+            b["channel"] = self.channel
         b["spans"] = [dict(x) for x in self.sent or []] if spans else []   # a copy: what's sent mustn't change
         return copy.deepcopy(b)
 
@@ -270,19 +270,19 @@ class Waterfall:
         return sum(size(s) for s in spans)
 
     def _fold(self, spans: list[dict], spawner) -> list[dict]:
-        finished = sorted((t for t in self.turns.values() if not t.running_for(self.thread)),
-                          key=lambda t: t.last_for(self.thread))
+        finished = sorted((t for t in self.turns.values() if not t.running_for(self.channel)),
+                          key=lambda t: t.last_for(self.channel))
         count, used = len(spans), self._size(spans)
         for t in finished:
             if count <= KEEP and used <= MAX_BYTES * 0.8:
                 break
             self.folded.add(t.id)
-            count -= len(t.mine(self.thread))
-            used -= 250 * len(t.mine(self.thread))
+            count -= len(t.mine(self.channel))
+            used -= 250 * len(t.mine(self.channel))
         spans = self._spans(spawner)
         for s in spans:
             if s["kind"] == "run" and s["id"] in self.folded:
-                n = len(self.turns[s["id"]].mine(self.thread))
+                n = len(self.turns[s["id"]].mine(self.channel))
                 s["detail"] = f"{n} calls folded" + (f" · {s['detail']}" if s.get("detail") else "")
         return spans
 
@@ -299,7 +299,8 @@ class Waterfall:
             return "set", self.full(spawner)
         spans = self._spans(spawner)
         new = [s for s in spans if s["id"] not in self.index]
-        if (any(s["start_ms"] < self.started for s in spans if s["id"] not in self.index)
+        if (len(spans) - len(new) < len(self.index)      # one that's drawn is in another channel now
+                or any(s["start_ms"] < self.started for s in spans if s["id"] not in self.index)
                 or len(self.sent) + len(new) > FOLD_AT * 1.3 or self.bytes + 300 * len(new) > MAX_BYTES):
             return "set", self.full(spawner)
         put: list[dict] = []
