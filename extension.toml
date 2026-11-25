@@ -3,10 +3,10 @@
 [extension]
 id = "trace"
 name = "Trace"
-version = "0.4.0"
+version = "0.5.0"
 publisher = "pointman-ai"
 summary = "Watch agents work: a channel's runs, model calls and tool calls as a live waterfall, every trace running now, and the last 7 days'."
-node = ">=0.4.0"
+node = ">=0.5.0"
 platforms = ["macos-arm64", "macos-x86_64", "linux-x86_64", "linux-arm64"]
 
 [run]
