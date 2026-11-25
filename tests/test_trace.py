@@ -8,7 +8,7 @@ from pointman_trace import trace
 from pointman_trace.runs import Index
 from pointman_trace.trace import Waterfall, check, order
 
-from helpers import T0, Log, text, tool
+from helpers import T0, Log, posted, text, tool
 
 
 def apply(block: dict, edits: list[dict]) -> dict:
@@ -177,6 +177,19 @@ class WaterfallTests(unittest.TestCase):
         run1 = next(s for s in block["spans"] if s["id"] == "r:1")
         self.assertTrue(run1["detail"].startswith("21 calls folded"))
         self.assertEqual(block["totals"]["tool_calls"], 50)  # the totals still count everything
+
+    def test_a_call_drawn_here_that_moves_to_another_channel_leaves(self):
+        a = Log(self.dir, 1, "scene", channel=500, cost_before=0.0)
+        a.say("q0", tool("t0", "Bash", command="ls"))
+        a.results(("t0", "x", False))
+        a.say("q1", tool("t1", "mcp__pointman__create_post", in_thread="post_7", blocks=["hi"]))
+        w = self.wf()
+        w.take(self.turns())
+        self.assertIn("t:t1", [s["id"] for s in w.full({})["spans"]])     # its result isn't in: where it is, for now
+        a.results(("t1", posted(600), False))
+        w.take(self.turns())
+        kind, block = w.update({})
+        self.assertEqual((kind, [s["id"] for s in block["spans"]]), ("set", ["a:scene", "r:1", "l:1.1", "t:t0"]))
 
     def test_a_turn_across_channels_shows_each_its_part(self):
         a = Log(self.dir, 1, "scene", channel=500, cost_before=0.0)

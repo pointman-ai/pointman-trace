@@ -299,7 +299,8 @@ class Waterfall:
             return "set", self.full(spawner)
         spans = self._spans(spawner)
         new = [s for s in spans if s["id"] not in self.index]
-        if (any(s["start_ms"] < self.started for s in spans if s["id"] not in self.index)
+        if (len(spans) - len(new) < len(self.index)      # one that's drawn is in another channel now
+                or any(s["start_ms"] < self.started for s in spans if s["id"] not in self.index)
                 or len(self.sent) + len(new) > FOLD_AT * 1.3 or self.bytes + 300 * len(new) > MAX_BYTES):
             return "set", self.full(spawner)
         put: list[dict] = []
