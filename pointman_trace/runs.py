@@ -17,7 +17,8 @@ A model call starts when its context hands back to the model (the turn's start, 
 results), and runs until its next message.
 
 **Which channel a call is for:** the one the turn is working in when it starts. A turn starts in the channel that
-woke it; a call that names another channel (`channel`) moves it there, along with the model call that made it.
+woke it; a call that names another channel (`channel`) moves it there, along with the model call that made it. A
+create_post that names none (a reply with `in_thread`) moves it to the channel its result says the post is in.
 A resident session's later wakes start in none, and their first calls wait for the first channel they name.
 So a session that works on several channels in one turn shows each channel's part in that channel's trace.
 """
@@ -45,6 +46,9 @@ META = re.compile(r"^run-(\d+)\.meta\.json$")
 HANDLE = re.compile(r"board @([a-z0-9][a-z0-9_-]{0,63})")
 TITLE = re.compile(r"“([^”\n]{1,120})” \(channel (\d+)\)")
 CHANNEL = re.compile(r"\(channel (\d+)\)")
+# a post's own line in create_post's result: `channel: “Types” (ch_500)`, or the id alone, indented by two spaces when
+# the result says more than the post. Its words are indented by four or more.
+POSTED = re.compile(r"^(?:  )?channel: (?:.* \()?ch_(\d+)\)?$", re.M)
 POST = re.compile(r"^\[\d+\] (.+?)(?: ›|:)", re.M)
 SPAWN = re.compile(r"^/spawn ([a-z0-9][a-z0-9-]*)", re.M)
 TASKS = ("Task", "Agent")
@@ -287,6 +291,8 @@ class Run:
         self.uses: dict[str, tuple] = {}     # an open tool_use's id → (turn, span, context)
         self.n = 0                           # model calls so far, for their ids
         self.cur: int | None = None          # the channel its open turn is working in
+        self.named = 0                       # how many calls have named a channel
+        self.posts: dict[str, tuple] = {}    # create_post calls that named none: (their model call, `named` then)
         self.ended = False
         self.spawns: list[str] = []          # the agents it /spawn'ed
         self.titles: dict[int, str] = {}
@@ -498,8 +504,12 @@ class Run:
                 said.append(b["text"])
             elif b.get("type") == "tool_use" and isinstance(b.get("id"), str):
                 n = channel_of(b["input"].get("channel")) if isinstance(b.get("input"), dict) else None
-                if n is not None and n != self.cur and c is None:
-                    self._move(llm["_turn"], n, llm)
+                if n is not None and c is None:
+                    self.named += 1
+                    if n != self.cur:
+                        self._move(llm["_turn"], n, llm)
+                elif c is None and str(b.get("name")).endswith("create_post"):
+                    self.posts[b["id"]] = (llm, self.named)
                 self._tool(llm["_turn"], c, cx, b, t)
                 name = friendly(str(b.get("name") or "?"), b.get("input"))[0]
                 tools = [x for x in llm["detail"].split(", ") if x]
@@ -547,6 +557,13 @@ class Run:
             if self.texts:
                 owner.texts[span["id"]][1] = clean(raw)
             self._titles(raw)
+            llm, named = self.posts.pop(str(b.get("tool_use_id")), (None, 0))
+            m = POSTED.search(raw) if llm is not None and owner is turn and not b.get("is_error") else None
+            if m is not None:
+                n = int(m.group(1))
+                if n != self.cur and named == self.named:     # (a call since that named a channel moved it on)
+                    self._move(turn, n, llm)
+                span["_channel"] = n
             if span["kind"] == "task":        # its sub-agent is done
                 sub = self.ctx.pop(span["id"][2:], None)
                 if sub is not None:
@@ -590,6 +607,7 @@ class Run:
             span["end_ms"] = max(span["start_ms"], owner.end or owner.last)
             span["state"] = "ok" if owner.end is not None and not owner.error else "error"
         self.uses.clear()
+        self.posts.clear()
         self.ctx = {}
         self.open = None
         self.version += 1

@@ -81,3 +81,10 @@ def tool(tid: str, name: str, **inp) -> dict:
 
 def text(s: str) -> dict:
     return {"type": "text", "text": s}
+
+
+def posted(channel: int, words: str = "hi", named: str = "“Types” (ch_{})") -> str:
+    """create_post's result, as core says it: the post's fields in order, its words indented, its channel after them."""
+    words = words.replace("\n", "\n    ")
+    return (f"id: post_9\nauthor: @scene (mem_2)\ncreated_at: 2026-11-25T04:05:56.474Z\nreply_to: post_7\nblocks:\n"
+            f"  - [block_1] {words}\nchannel: {named.format(channel)}\nin_thread: post_7")
